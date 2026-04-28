@@ -253,8 +253,137 @@
   </div>
 
   <div id="tab-space" class="tab-page">
-    <div class="page-static">
-      <div class="dev-placeholder"><span>空间记忆功能开发中</span></div>
+    <div class="spatial-container">
+      <!-- 顶部区域：摄像头画面 + 建模状态 -->
+      <div class="spatial-top-bar">
+        <div class="spatial-camera-box">
+          <div class="spatial-box-header">
+            <span class="spatial-box-title">📷 摄像头画面</span>
+            <span class="camera-status-indicator" id="spatialCameraStatus">
+              <span class="status-dot offline"></span> 未连接
+            </span>
+          </div>
+          <div class="camera-feed-container">
+            <video id="spatialCameraVideo" autoplay playsinline muted style="display:none;"></video>
+            <img id="spatialCameraImg" style="display:none;" src="">
+            <div class="camera-placeholder" id="spatialCameraPlaceholder">
+              <span>等待摄像头连接...</span>
+            </div>
+          </div>
+          <div class="camera-controls">
+            <button class="camera-control-btn" id="spatialStartCaptureBtn" onclick="spatialStartCapture()">
+              ▶️ 开始采集
+            </button>
+            <button class="camera-control-btn stop" id="spatialStopCaptureBtn" onclick="spatialStopCapture()" disabled>
+              ⏹️ 停止采集
+            </button>
+          </div>
+        </div>
+        
+        <div class="spatial-modeling-box">
+          <div class="spatial-box-header">
+            <span class="spatial-box-title">🔄 建模过程</span>
+          </div>
+          <div class="modeling-progress">
+            <div class="progress-step" id="stepCapture">
+              <span class="step-icon">📷</span>
+              <span class="step-label">采集</span>
+              <span class="step-status" id="stepCaptureStatus">等待</span>
+            </div>
+            <div class="progress-arrow">→</div>
+            <div class="progress-step" id="stepProcessing">
+              <span class="step-icon">⚙️</span>
+              <span class="step-label">处理</span>
+              <span class="step-status" id="stepProcessingStatus">等待</span>
+            </div>
+            <div class="progress-arrow">→</div>
+            <div class="progress-step" id="step3D">
+              <span class="step-icon">🎲</span>
+              <span class="step-label">3D重建</span>
+              <span class="step-status" id="step3DStatus">等待</span>
+            </div>
+          </div>
+          <div class="modeling-info">
+            <div class="info-item">
+              <span class="info-label">已采集帧:</span>
+              <span class="info-value" id="frameCount">0</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">处理进度:</span>
+              <span class="info-value" id="processProgress">0%</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">点云数量:</span>
+              <span class="info-value" id="pointCount">0</span>
+            </div>
+          </div>
+          <div class="modeling-log" id="modelingLog">
+            <div class="log-item">等待开始采集...</div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- 主区域：3D渲染结果 -->
+      <div class="spatial-main-area">
+        <div class="spatial-3d-container">
+          <div class="spatial-box-header">
+            <span class="spatial-box-title">🎬 3D渲染结果</span>
+            <div class="view-controls">
+              <button class="view-control-btn" id="viewResetBtn" onclick="reset3DCamera()">🔄 重置视角</button>
+              <button class="view-control-btn" id="viewPathBtn" onclick="togglePathVisibility()">🛤️ 轨迹</button>
+              <button class="view-control-btn" id="viewPointBtn" onclick="togglePointCloud()">☁️ 点云</button>
+            </div>
+          </div>
+          <div id="spatialCanvasContainer" class="canvas-container">
+            <canvas id="spatialCanvas"></canvas>
+            <div class="canvas-overlay" id="canvasOverlay">
+              <div class="overlay-content">
+                <div class="overlay-icon">🎲</div>
+                <div class="overlay-text">3D场景渲染区域</div>
+                <div class="overlay-hint">开始采集后将显示重建的3D模型</div>
+              </div>
+            </div>
+          </div>
+          <div class="trajectory-indicator">
+            <div class="trajectory-label">📍 摄像头移动轨迹</div>
+            <svg id="trajectorySvg" class="trajectory-svg"></svg>
+          </div>
+        </div>
+        
+        <!-- 右侧控制面板 -->
+        <div class="spatial-control-panel">
+          <div class="control-section">
+            <h4>📍 位置信息</h4>
+            <div class="position-info">
+              <div class="pos-item">X: <span id="posX">0.00</span></div>
+              <div class="pos-item">Y: <span id="posY">0.00</span></div>
+              <div class="pos-item">Z: <span id="posZ">0.00</span></div>
+            </div>
+          </div>
+          <div class="control-section">
+            <h4>⚙️ 渲染设置</h4>
+            <div class="render-settings">
+              <label class="setting-item">
+                <input type="checkbox" id="renderWireframe"> 线框模式
+              </label>
+              <label class="setting-item">
+                <input type="checkbox" id="renderTexture"> 纹理渲染
+              </label>
+              <label class="setting-item">
+                <input type="checkbox" id="renderLighting" checked> 光照效果
+              </label>
+            </div>
+          </div>
+          <div class="control-section">
+            <h4>📊 统计信息</h4>
+            <div class="stats-info">
+              <div class="stat-item">FPS: <span id="statFps">0</span></div>
+              <div class="stat-item">顶点数: <span id="statVertices">0</span></div>
+              <div class="stat-item">面数: <span id="statFaces">0</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -433,6 +562,7 @@
     <script src="/web/assets/common.js"></script>
   <script src="/web/assets/home.js"></script>
   <script src="/web/assets/temporal.js"></script>
+  <script src="/web/assets/spatial.js"></script>
 
 </body>
 </html>
