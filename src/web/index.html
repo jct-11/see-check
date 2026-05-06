@@ -304,19 +304,23 @@
             </div>
           </div>
           <div class="modeling-info">
-            <div class="info-item">
-              <span class="info-label">已采集帧:</span>
-              <span class="info-value" id="frameCount">0</span>
+              <div class="info-item">
+                <span class="info-label">已采集帧:</span>
+                <span class="info-value" id="frameCount">0</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">处理进度:</span>
+                <span class="info-value" id="processProgress">0%</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">点云数量:</span>
+                <span class="info-value" id="pointCount">0</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">连接状态:</span>
+                <span class="info-value" id="websocketStatus"><span class="status-dot offline"></span> RTX3090未连接</span>
+              </div>
             </div>
-            <div class="info-item">
-              <span class="info-label">处理进度:</span>
-              <span class="info-value" id="processProgress">0%</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">点云数量:</span>
-              <span class="info-value" id="pointCount">0</span>
-            </div>
-          </div>
           <div class="modeling-log" id="modelingLog">
             <div class="log-item">等待开始采集...</div>
           </div>
@@ -338,7 +342,7 @@
             <canvas id="spatialCanvas"></canvas>
             <div class="canvas-overlay" id="canvasOverlay">
               <div class="overlay-content">
-                <div class="overlay-icon">🎲</div>
+                <div class="overlay-icon">🌐</div>
                 <div class="overlay-text">3D场景渲染区域</div>
                 <div class="overlay-hint">开始采集后将显示重建的3D模型</div>
               </div>
@@ -559,10 +563,13 @@
     </div>
   </div>
   <div class="modal" id="frameModal"><div class="modal-content"><div class="modal-header"><h3>帧详情</h3><button class="close-btn" onclick="closeFrameModal()">×</button></div><div class="modal-body" id="frameModalBody"></div></div></div>
-    <script src="/web/assets/common.js"></script>
+    <script src="/web/assets/spatial_api.js"></script>
+  <script src="/web/assets/spatial_ui.js"></script>
+  <script src="/web/assets/spatial_visualizer.js"></script>
+  <script src="/web/assets/spatial_map.js"></script>
+  <script src="/web/assets/common.js"></script>
   <script src="/web/assets/home.js"></script>
   <script src="/web/assets/temporal.js"></script>
-  <script src="/web/assets/spatial.js"></script>
 
 </body>
 </html>

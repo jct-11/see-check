@@ -4,6 +4,7 @@ let allFrames = [], isCapturing = false, captureTimer = null, frameCounter = 0, 
     let serverPollTimer = null;
     let configSynced = false;
     let inferenceServerOptions = [];
+    let localCaptureRequested = false;
 
     // 本地摄像头 pixelDiff 状态（与服务端 pixelDiff.js 逻辑对称）
     const LOCAL_THUMB_W = 128, LOCAL_THUMB_H = 72;
@@ -215,6 +216,12 @@ let allFrames = [], isCapturing = false, captureTimer = null, frameCounter = 0, 
         if (!configSynced && status && status.config) {
           const cfg = status.config;
           inferenceServerOptions = normalizeServerOptions(cfg.inferenceServers || []);
+          // 如果服务器返回的推理服务器列表为空，使用默认配置作为回退
+          if (inferenceServerOptions.length === 0) {
+            inferenceServerOptions = normalizeServerOptions([
+              { id: 'local', name: 'Mac Mini', protocol: 'http', host: 'localhost', port: 11434, basePath: '', apiStyle: 'ollama' }
+            ]);
+          }
           document.getElementById('configPrompt').value = cfg.prompt || document.getElementById('configPrompt').placeholder;
           renderServerOptions(cfg.selectedInferenceServerId);
           autoResizeTextarea(document.getElementById('configPrompt'));
@@ -223,6 +230,9 @@ let allFrames = [], isCapturing = false, captureTimer = null, frameCounter = 0, 
 
         const serverCapturing = status.isCapturing;
         if (serverCapturing !== isCapturing) {
+          if (localCaptureRequested && !serverCapturing) {
+            return;
+          }
           isCapturing = serverCapturing;
           document.getElementById('startBtn').disabled = serverCapturing;
           document.getElementById('stopBtn').disabled = !serverCapturing;
@@ -336,8 +346,17 @@ let allFrames = [], isCapturing = false, captureTimer = null, frameCounter = 0, 
       } catch (err) { body.innerHTML = '<div class="empty-state">加载失败</div>'; }
     }
 
-    function closeFrameModal() { document.getElementById('frameModal').style.display = 'none'; }
-    window.onclick = function(e) { if (e.target === document.getElementById('frameModal')) closeFrameModal(); }
+    function closeFrameModal() { 
+      const modal = document.getElementById('frameModal');
+      if (modal) modal.style.display = 'none'; 
+    }
+    
+    function handleModalClick(e) { 
+      const modal = document.getElementById('frameModal');
+      if (modal && e.target === modal) closeFrameModal(); 
+    }
+    
+    window.addEventListener('click', handleModalClick);
 
     function setConfigEditable(enabled) {
       document.getElementById('configModel').disabled = !enabled;
@@ -376,6 +395,7 @@ let allFrames = [], isCapturing = false, captureTimer = null, frameCounter = 0, 
         });
         isCapturing = true; frameCounter = 0;
         localLastThumbData = null; localLastUploadTime = 0;
+        localCaptureRequested = true;
         document.getElementById('startBtn').disabled = true;
         document.getElementById('stopBtn').disabled = false;
         setConfigEditable(false);
@@ -452,6 +472,7 @@ let allFrames = [], isCapturing = false, captureTimer = null, frameCounter = 0, 
     async function stopCapture() {
       if (captureTimer) { clearInterval(captureTimer); captureTimer = null; }
       isCapturing = false;
+      localCaptureRequested = false;
       localLastThumbData = null; localLastUploadTime = 0;
       document.getElementById('startBtn').disabled = false;
       document.getElementById('stopBtn').disabled = true;

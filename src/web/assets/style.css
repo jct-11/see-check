@@ -523,6 +523,7 @@
     .spatial-modeling-box {
       flex: 1;
       min-width: 300px;
+      max-height: 280px;
       background: var(--bg-tertiary);
       border-radius: 12px;
       border: 1px solid var(--border);
@@ -589,6 +590,8 @@
       gap: 8px;
       padding: 10px 14px;
       background: rgba(0,0,0,0.2);
+      position: relative;
+      z-index: 10;
     }
     .camera-control-btn {
       flex: 1;
@@ -679,6 +682,8 @@
       color: var(--text-secondary);
       overflow-y: auto;
       background: rgba(0,0,0,0.3);
+      max-height: 120px;
+      min-height: 80px;
     }
     .log-item {
       margin-bottom: 4px;
@@ -762,6 +767,122 @@
     .overlay-hint {
       font-size: 12px;
       color: #666;
+    }
+
+    .view-divider {
+      width: 1px;
+      height: 20px;
+      background: var(--border);
+      margin: 0 4px;
+      align-self: center;
+    }
+    .view-control-btn.active {
+      background: rgba(33, 150, 243, 0.2);
+      border-color: rgba(33, 150, 243, 0.5);
+      color: var(--accent-secondary);
+    }
+
+    .map-container {
+      flex: 1;
+      background: #0d1117;
+      position: relative;
+      overflow: hidden;
+      cursor: grab;
+    }
+    .map-container canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .map-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(13,17,23,0.85);
+      z-index: 10;
+    }
+    .map-toolbar {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      z-index: 15;
+    }
+    .map-tool-btn {
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(20,20,40,0.85);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s;
+      backdrop-filter: blur(6px);
+      padding: 0;
+      line-height: 1;
+    }
+    .map-tool-btn:hover {
+      background: rgba(33,150,243,0.25);
+      border-color: rgba(33,150,243,0.5);
+    }
+    .map-legend {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      display: flex;
+      gap: 12px;
+      padding: 8px 14px;
+      background: rgba(20,20,40,0.85);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 8px;
+      z-index: 15;
+      backdrop-filter: blur(6px);
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+    .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .legend-line {
+      width: 16px;
+      height: 2px;
+      background: linear-gradient(90deg, #4CAF50, #f44336);
+      border-radius: 1px;
+      flex-shrink: 0;
+    }
+    .map-info {
+      position: absolute;
+      bottom: 10px;
+      right: 10px;
+      display: flex;
+      gap: 14px;
+      padding: 6px 12px;
+      background: rgba(20,20,40,0.85);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 6px;
+      z-index: 15;
+      font-size: 11px;
+      font-family: 'SF Mono', Monaco, Consolas, monospace;
+      color: var(--text-secondary);
+      backdrop-filter: blur(6px);
     }
     
     .trajectory-indicator {

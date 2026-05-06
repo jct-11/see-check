@@ -24,6 +24,7 @@
     "apache-arrow": "^18.1.0",
     "better-sqlite3": "^12.9.0",
     "canvas": "^3.2.3",
-    "formidable": "^3.5.4"
+    "formidable": "^3.5.4",
+    "ws": "^8.20.0"
   }
 }

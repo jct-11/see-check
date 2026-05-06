@@ -11,5 +11,5 @@ function switchTab(name) {
         setTimeout(syncHeights, 0);
         setTimeout(syncHeights, 120);
       }
-      if (name === 'space') { setTimeout(function() { initPLYViewer(); initSceneGraph(); onSpatialTabShow(); }, 100); }
+      if (name === 'space') { setTimeout(function() { if (typeof initPLYViewer === 'function') initPLYViewer(); if (typeof initSceneGraph === 'function') initSceneGraph(); if (typeof onSpatialTabShow === 'function') onSpatialTabShow(); }, 100); }
     }
