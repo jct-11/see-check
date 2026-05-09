@@ -271,12 +271,30 @@
             </div>
           </div>
           <div class="camera-controls">
-            <button class="camera-control-btn" id="spatialStartCaptureBtn" onclick="spatialStartCapture()">
+            <button class="camera-control-btn" id="spatialCameraToggleBtn">
+              🖥️ 切换本地
+            </button>
+            <button class="camera-control-btn" id="spatialStartCaptureBtn">
               ▶️ 开始采集
             </button>
-            <button class="camera-control-btn stop" id="spatialStopCaptureBtn" onclick="spatialStopCapture()" disabled>
+            <button class="camera-control-btn stop" id="spatialStopCaptureBtn" disabled>
               ⏹️ 停止采集
             </button>
+            <button class="camera-control-btn test" id="spatialTestBtn" onclick="startTestProcess()">
+              🧪 测试模式
+            </button>
+          </div>
+          <div class="capture-settings">
+            <div class="control-item capture-setting-item">
+              <label>采集 FPS</label>
+              <input type="number" id="captureFpsInput" min="1" max="30" value="5" step="1" style="width:60px;">
+              <span class="unit">帧/秒</span>
+            </div>
+            <div class="control-item capture-setting-item">
+              <label>总帧数</label>
+              <input type="number" id="captureFrameCountInput" min="10" max="10000" value="300" step="10" style="width:70px;">
+              <span class="unit">帧</span>
+            </div>
           </div>
         </div>
         
@@ -291,30 +309,56 @@
               <span class="step-status" id="stepCaptureStatus">等待</span>
             </div>
             <div class="progress-arrow">→</div>
+            <div class="progress-step" id="stepUpload">
+              <span class="step-icon">📤</span>
+              <span class="step-label">上传</span>
+              <span class="step-status" id="stepUploadStatus">等待</span>
+            </div>
+            <div class="progress-arrow">→</div>
             <div class="progress-step" id="stepProcessing">
               <span class="step-icon">⚙️</span>
               <span class="step-label">处理</span>
               <span class="step-status" id="stepProcessingStatus">等待</span>
             </div>
             <div class="progress-arrow">→</div>
+            <div class="progress-step" id="stepDownload">
+              <span class="step-icon">📥</span>
+              <span class="step-label">接收</span>
+              <span class="step-status" id="stepDownloadStatus">等待</span>
+            </div>
+            <div class="progress-arrow">→</div>
             <div class="progress-step" id="step3D">
               <span class="step-icon">🎲</span>
-              <span class="step-label">3D重建</span>
+              <span class="step-label">渲染</span>
               <span class="step-status" id="step3DStatus">等待</span>
             </div>
+          </div>
+          <div class="progress-description">
           </div>
           <div class="modeling-info">
               <div class="info-item">
                 <span class="info-label">已采集帧:</span>
-                <span class="info-value" id="frameCount">0</span>
+                <span class="info-value" id="frameCount">0/200</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">上传进度:</span>
+                <span class="info-value" id="uploadProgress">0%</span>
               </div>
               <div class="info-item">
                 <span class="info-label">处理进度:</span>
                 <span class="info-value" id="processProgress">0%</span>
               </div>
               <div class="info-item">
+                <span class="info-label">接收进度:</span>
+                <span class="info-value" id="downloadProgress">0%</span>
+              </div>
+              <div class="info-item">
                 <span class="info-label">点云数量:</span>
                 <span class="info-value" id="pointCount">0</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">批次号:</span>
+                <span class="info-value" id="batchIdDisplay">-</span>
               </div>
               <div class="info-item">
                 <span class="info-label">连接状态:</span>
@@ -333,9 +377,97 @@
           <div class="spatial-box-header">
             <span class="spatial-box-title">🎬 3D渲染结果</span>
             <div class="view-controls">
+              <button class="view-control-btn active" id="view3DBtn" onclick="switchSpatialView('3d')">🎬 3D视图</button>
               <button class="view-control-btn" id="viewResetBtn" onclick="reset3DCamera()">🔄 重置视角</button>
-              <button class="view-control-btn" id="viewPathBtn" onclick="togglePathVisibility()">🛤️ 轨迹</button>
-              <button class="view-control-btn" id="viewPointBtn" onclick="togglePointCloud()">☁️ 点云</button>
+              <button class="view-control-btn" id="exportGLBBtn" onclick="exportToGLB()">💾 导出GLB</button>
+              <button class="view-control-btn" id="toggleControlsBtn" onclick="toggleVisualizationControls()">⚙️ 控制面板</button>
+            </div>
+          </div>
+          
+          <!-- 可视化控制面板 -->
+          <div class="visualization-controls" id="visualizationControls" style="display:none;">
+            <div class="control-panel">
+              <button class="control-panel-close" onclick="toggleVisualizationControls()">✕</button>
+              <div class="control-section">
+                <h4>📊 点云设置</h4>
+                <div class="control-item">
+                  <label>点大小</label>
+                  <input type="range" id="pointSizeSlider" min="0.001" max="0.1" step="0.001" value="0.001" oninput="updatePointSize(this.value)">
+                  <span id="pointSizeValue">0.001</span>
+                </div>
+                <div class="control-item">
+                  <label>置信度阈值</label>
+                  <input type="range" id="confSlider" min="0" max="2" step="0.01" value="0" oninput="updateConfThreshold(this.value)">
+                  <span id="confValue">0</span>
+                </div>
+                <div class="control-item">
+                  <label>降采样步长</label>
+                  <input type="range" id="downsampleSlider" min="1" max="100" step="1" value="19" oninput="updateDownsample(this.value)">
+                  <span id="downsampleValue">19</span>
+                </div>
+              </div>
+              
+              <div class="control-section">
+                <h4>📷 相机可视化</h4>
+                <div class="control-item">
+                  <label>
+                    <input type="checkbox" id="showCameraCheckbox" checked onchange="toggleCameraVisualization()">
+                    显示相机视锥
+                  </label>
+                </div>
+                <div class="control-item">
+                  <label>相机大小</label>
+                  <input type="range" id="cameraSizeSlider" min="0.01" max="0.2" step="0.01" value="0.05" oninput="updateCameraSize(this.value)">
+                  <span id="cameraSizeValue">0.05</span>
+                </div>
+              </div>
+              
+              <div class="control-section">
+                <h4>🎨 颜色设置</h4>
+                <div class="control-item">
+                  <label>颜色模式</label>
+                  <select id="colorModeSelect" onchange="updateColorMode(this.value)">
+                    <option value="rgb">RGB颜色</option>
+                    <option value="depth">深度</option>
+                    <option value="frame">帧索引</option>
+                  </select>
+                </div>
+              </div>
+              
+              <div class="control-section">
+                <h4>🎬 帧动画</h4>
+                <div class="control-item">
+                  <label>
+                    <input type="checkbox" id="enableAnimationCheckbox" onchange="toggleFrameAnimation()">
+                    启用帧动画
+                  </label>
+                </div>
+                <div class="control-item">
+                  <label>当前帧</label>
+                  <input type="range" id="frameSlider" min="-1" max="100" value="-1" oninput="updateCurrentFrame(this.value)">
+                  <span id="frameValue">0</span>
+                </div>
+                <div class="control-item">
+                  <label>播放速度</label>
+                  <input type="range" id="playSpeedSlider" min="1" max="30" value="10" oninput="updatePlaySpeed(this.value)">
+                  <span id="playSpeedValue">10 fps</span>
+                </div>
+                <div class="control-item">
+                  <button class="control-btn" id="playBtn" onclick="playAnimation()">▶️ 播放</button>
+                  <button class="control-btn" id="pauseBtn" onclick="pauseAnimation()">⏸️ 暂停</button>
+                  <button class="control-btn" id="stopBtn" onclick="stopAnimation()">⏹️ 停止</button>
+                </div>
+              </div>
+              
+              <div class="control-section">
+                <h4>📈 数据信息</h4>
+                <div class="control-item">
+                  <button class="control-btn" onclick="showCameraInfo()">📷 显示相机参数</button>
+                </div>
+                <div class="control-item">
+                  <button class="control-btn" onclick="showManifestInfo()">📋 显示文件清单</button>
+                </div>
+              </div>
             </div>
           </div>
           <div id="spatialCanvasContainer" class="canvas-container">
@@ -346,44 +478,6 @@
                 <div class="overlay-text">3D场景渲染区域</div>
                 <div class="overlay-hint">开始采集后将显示重建的3D模型</div>
               </div>
-            </div>
-          </div>
-          <div class="trajectory-indicator">
-            <div class="trajectory-label">📍 摄像头移动轨迹</div>
-            <svg id="trajectorySvg" class="trajectory-svg"></svg>
-          </div>
-        </div>
-        
-        <!-- 右侧控制面板 -->
-        <div class="spatial-control-panel">
-          <div class="control-section">
-            <h4>📍 位置信息</h4>
-            <div class="position-info">
-              <div class="pos-item">X: <span id="posX">0.00</span></div>
-              <div class="pos-item">Y: <span id="posY">0.00</span></div>
-              <div class="pos-item">Z: <span id="posZ">0.00</span></div>
-            </div>
-          </div>
-          <div class="control-section">
-            <h4>⚙️ 渲染设置</h4>
-            <div class="render-settings">
-              <label class="setting-item">
-                <input type="checkbox" id="renderWireframe"> 线框模式
-              </label>
-              <label class="setting-item">
-                <input type="checkbox" id="renderTexture"> 纹理渲染
-              </label>
-              <label class="setting-item">
-                <input type="checkbox" id="renderLighting" checked> 光照效果
-              </label>
-            </div>
-          </div>
-          <div class="control-section">
-            <h4>📊 统计信息</h4>
-            <div class="stats-info">
-              <div class="stat-item">FPS: <span id="statFps">0</span></div>
-              <div class="stat-item">顶点数: <span id="statVertices">0</span></div>
-              <div class="stat-item">面数: <span id="statFaces">0</span></div>
             </div>
           </div>
         </div>
@@ -465,7 +559,7 @@
   "selectedInferenceServerId": "orin",
   "ollamaBase": "http://192.168.1.123:8080/v1",
   "inferenceServers": [
-    { "id": "3090", "name": "RTX 3090", "protocol": "http", "host": "192.168.0.200", "port": 11434, "basePath": "", "apiStyle": "ollama" },
+    { "id": "3090", "name": "RTX 3090", "protocol": "http", "host": "192.168.0.200", "port": 8000, "basePath": "", "apiStyle": "ollama" },
     { "id": "orin", "name": "Orin", "protocol": "http", "host": "192.168.1.123", "port": 8080, "basePath": "/v1", "apiStyle": "openai" }
   ]
 }</pre>
@@ -563,10 +657,7 @@
     </div>
   </div>
   <div class="modal" id="frameModal"><div class="modal-content"><div class="modal-header"><h3>帧详情</h3><button class="close-btn" onclick="closeFrameModal()">×</button></div><div class="modal-body" id="frameModalBody"></div></div></div>
-    <script src="/web/assets/spatial_api.js"></script>
-  <script src="/web/assets/spatial_ui.js"></script>
-  <script src="/web/assets/spatial_visualizer.js"></script>
-  <script src="/web/assets/spatial_map.js"></script>
+    <script src="/web/assets/spatial.js"></script>
   <script src="/web/assets/common.js"></script>
   <script src="/web/assets/home.js"></script>
   <script src="/web/assets/temporal.js"></script>

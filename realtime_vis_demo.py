@@ -1,13 +1,10 @@
 """
 LingBot-MAP Real-time Streaming Demo
-完全按照 demo.py 的逻辑实现实时摄像头可视化
+完全按照 demo.py 的逻辑实现实时推理和点云生成
 
-实现效果与 demo.py 一致：
-- 3D点云（带颜色和置信度过滤）
-- 相机轨迹（渐变颜色）
-- 相机视锥体（渐变颜色）
-- 原始图像序列
-- 完整的GUI控制
+实现功能：
+- 3D点云生成（带颜色和置信度过滤）
+- 相机位姿估计
 - HTTP API 接口支持图片上传和点云生成
 """
 
@@ -19,13 +16,9 @@ import torch
 import time
 import queue
 import threading
-import matplotlib.cm as cm
 import uuid
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-
-import viser
-import viser.transforms as tf
 
 from lingbot_map.models.gct_stream import GCTStream
 from lingbot_map.utils.pose_enc import pose_encoding_to_extri_intri
@@ -34,7 +27,7 @@ from lingbot_map.utils.load_fn import preprocess_image
 
 # FastAPI dependencies for HTTP API
 try:
-    from fastapi import FastAPI, UploadFile, File, Response, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, UploadFile, File, Response, Request
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.staticfiles import StaticFiles
     HAS_FASTAPI = True
@@ -145,641 +138,6 @@ def prepare_for_visualization(predictions, images=None):
 # Real-time Viewer (模拟 PointCloudViewer 的效果)
 # =============================================================================
 
-class RealTimeViewer:
-    """实时3D可视化器 - 完全模拟 PointCloudViewer 的效果"""
-    
-    def __init__(self, args):
-        self.args = args
-        self.server = viser.ViserServer(host="0.0.0.0", port=args.port)
-        self.server.gui.configure_theme(titlebar_content=None, control_layout="collapsible")
-        
-        # State
-        self.pc_handles = []
-        self.cam_handles = []
-        self.frame_nodes = []
-        self.vis_threshold = args.conf_threshold
-        self.point_size = args.point_size
-        self.show_camera = True
-        
-        # Data storage
-        self.pcs = {}  # {step: {"pc": ..., "color": ..., "conf": ...}}
-        self.cam_dict = None  # {"focal": [], "pp": [], "R": [], "t": []}
-        self.all_steps = []
-        self.original_images = []
-        self.traj_list = []
-        
-        # Accumulated point cloud for persistent mapping
-        self.accumulated_points = None
-        self.accumulated_colors = None
-        self.accumulated_conf = None
-        self.accumulated_pc_handle = None
-        
-        # GUI elements
-        self.gui_timestep = None
-        self.show_video_checkbox = None
-        self.current_frame_image = None
-        self.psize_slider = None
-        self.camsize_slider = None
-        self.downsample_slider = None
-        self.vis_threshold_slider = None
-        self.camera_downsample_slider = None
-        self.show_camera_checkbox = None
-        self.fourd = False
-        
-        # Setup GUI
-        self._setup_gui()
-        self.server.on_client_connect(self._connect_client)
-    
-    def _setup_gui(self):
-        """Setup GUI controls (完全按照 PointCloudViewer)"""
-        # Video frame display
-        with self.server.gui.add_folder("Video Display"):
-            self.show_video_checkbox = self.server.gui.add_checkbox("Show Current Frame", initial_value=True)
-            self.current_frame_image = self.server.gui.add_image(
-                np.zeros((480, 640, 3), dtype=np.uint8), label="Current Frame"
-            )
-
-        # Preset view direction buttons
-        with self.server.gui.add_folder("Reset View Direction"):
-            btn_overview = self.server.gui.add_button("Overview")
-            btn_front = self.server.gui.add_button("Front (+Z)")
-            btn_back = self.server.gui.add_button("Back (-Z)")
-            btn_top = self.server.gui.add_button("Top (-Y)")
-            btn_left = self.server.gui.add_button("Left (-X)")
-            btn_right = self.server.gui.add_button("Right (+X)")
-            btn_first_cam = self.server.gui.add_button("First Camera")
-
-        @btn_overview.on_click
-        def _(_):
-            d = np.array([0.5, -0.6, 0.6])
-            self._reset_view_to_direction(d / np.linalg.norm(d))
-
-        @btn_front.on_click
-        def _(_):
-            self._reset_view_to_direction(np.array([0.0, 0.0, 1.0]))
-
-        @btn_back.on_click
-        def _(_):
-            self._reset_view_to_direction(np.array([0.0, 0.0, -1.0]))
-
-        @btn_top.on_click
-        def _(_):
-            self._reset_view_to_direction(np.array([0.0, -1.0, 0.0]), up=np.array([0.0, 0.0, 1.0]))
-
-        @btn_left.on_click
-        def _(_):
-            self._reset_view_to_direction(np.array([-1.0, 0.0, 0.0]))
-
-        @btn_right.on_click
-        def _(_):
-            self._reset_view_to_direction(np.array([1.0, 0.0, 0.0]))
-
-        @btn_first_cam.on_click
-        def _(_):
-            self._move_to_camera(0, smooth=True)
-
-        # 4D/3D mode buttons
-        button3 = self.server.gui.add_button("4D (Only Show Current Frame)")
-        button4 = self.server.gui.add_button("3D (Show All Frames)")
-
-        @button3.on_click
-        def _(_):
-            self.fourd = True
-
-        @button4.on_click
-        def _(_):
-            self.fourd = False
-
-        # Sliders
-        self.focal_slider = self.server.gui.add_slider(
-            "Focal Length", min=0.1, max=99999, step=1, initial_value=533
-        )
-        self.psize_slider = self.server.gui.add_slider(
-            "Point Size", min=0.00001, max=0.1, step=0.00001, initial_value=self.point_size
-        )
-        self.camsize_slider = self.server.gui.add_slider(
-            "Camera Size", min=0.01, max=0.5, step=0.01, initial_value=0.1
-        )
-        self.downsample_slider = self.server.gui.add_slider(
-            "Downsample Factor", min=1, max=1000, step=1, initial_value=self.args.downsample_factor
-        )
-        self.show_camera_checkbox = self.server.gui.add_checkbox(
-            "Show Camera", initial_value=self.show_camera
-        )
-        self.vis_threshold_slider = self.server.gui.add_slider(
-            "Visibility Threshold", min=1.0, max=5.0, step=0.01,
-            initial_value=self.vis_threshold,
-        )
-        self.camera_downsample_slider = self.server.gui.add_slider(
-            "Camera Downsample Factor", min=1, max=50, step=1, initial_value=1
-        )
-
-        @self.psize_slider.on_update
-        def _(_):
-            for handle in self.pc_handles:
-                handle.point_size = self.psize_slider.value
-            if self.accumulated_pc_handle is not None:
-                self.accumulated_pc_handle.point_size = self.psize_slider.value
-
-        @self.camsize_slider.on_update
-        def _(_):
-            for handle in self.cam_handles:
-                handle.scale = self.camsize_slider.value
-
-        @self.downsample_slider.on_update
-        def _(_):
-            # For accumulated point cloud, regenerate with new settings
-            if self.accumulated_points is not None and self.accumulated_pc_handle is not None:
-                try:
-                    self.accumulated_pc_handle.remove()
-                except (KeyError, AttributeError):
-                    pass
-                
-                # Apply downsample and threshold filters to accumulated points
-                pred_pts = self.accumulated_points
-                pc_color = self.accumulated_colors
-                conf_val = self.accumulated_conf
-                
-                # Confidence threshold filter
-                if conf_val is not None:
-                    mask = conf_val > self.vis_threshold
-                    pred_pts = pred_pts[mask]
-                    pc_color = pc_color[mask]
-                
-                # Downsample
-                downsample_factor = self.downsample_slider.value
-                if downsample_factor > 1 and len(pred_pts) > 0:
-                    indices = np.arange(0, len(pred_pts), downsample_factor)
-                    pred_pts = pred_pts[indices]
-                    pc_color = pc_color[indices]
-                
-                self.accumulated_pc_handle = self.server.scene.add_point_cloud(
-                    name="/accumulated/point_cloud",
-                    points=pred_pts,
-                    colors=pc_color,
-                    point_size=self.psize_slider.value,
-                )
-
-        @self.show_camera_checkbox.on_update
-        def _(_):
-            self.show_camera = self.show_camera_checkbox.value
-            if self.show_camera:
-                self._regenerate_cameras()
-            else:
-                for handle in self.cam_handles:
-                    handle.visible = False
-
-        @self.vis_threshold_slider.on_update
-        def _(_):
-            self.vis_threshold = self.vis_threshold_slider.value
-            # Update accumulated point cloud with new threshold
-            if self.accumulated_points is not None and self.accumulated_pc_handle is not None:
-                try:
-                    self.accumulated_pc_handle.remove()
-                except (KeyError, AttributeError):
-                    pass
-                
-                # Apply confidence threshold filter to accumulated points
-                pred_pts = self.accumulated_points
-                pc_color = self.accumulated_colors
-                conf_val = self.accumulated_conf
-                
-                # Confidence threshold filter
-                if conf_val is not None:
-                    mask = conf_val > self.vis_threshold
-                    pred_pts = pred_pts[mask]
-                    pc_color = pc_color[mask]
-                
-                # Downsample
-                downsample_factor = self.downsample_slider.value
-                if downsample_factor > 1 and len(pred_pts) > 0:
-                    indices = np.arange(0, len(pred_pts), downsample_factor)
-                    pred_pts = pred_pts[indices]
-                    pc_color = pc_color[indices]
-                
-                self.accumulated_pc_handle = self.server.scene.add_point_cloud(
-                    name="/accumulated/point_cloud",
-                    points=pred_pts,
-                    colors=pc_color,
-                    point_size=self.psize_slider.value,
-                )
-
-        @self.camera_downsample_slider.on_update
-        def _(_):
-            self._regenerate_cameras()
-
-    def _compute_scene_center_and_scale(self):
-        """Compute scene center and scale from camera positions"""
-        if self.cam_dict is not None and "t" in self.cam_dict:
-            cam_positions = np.array([self.cam_dict["t"][s] for s in self.all_steps])
-            center = np.mean(cam_positions, axis=0)
-            if len(cam_positions) > 1:
-                extent = np.ptp(cam_positions, axis=0)
-                scale = np.linalg.norm(extent)
-            else:
-                scale = 1.0
-        else:
-            center = np.zeros(3)
-            scale = 1.0
-        return center, max(scale, 0.1)
-
-    def _reset_view_to_direction(self, direction, up=np.array([0.0, -1.0, 0.0]), distance_scale=1.5, smooth=True):
-        """Reset the viewer camera to look at scene center from a given direction."""
-        center, scale = self._compute_scene_center_and_scale()
-        distance = scale * distance_scale
-        position = center + direction * distance
-
-        for client in self.server.get_clients().values():
-            client.camera.up_direction = tuple(up)
-            client.camera.position = tuple(position)
-            client.camera.look_at = tuple(center)
-
-    def _move_to_camera(self, frame_idx, smooth=True):
-        """Move viewer camera to match reconstructed camera at given frame."""
-        if self.cam_dict is None or frame_idx >= len(self.all_steps):
-            return
-
-        step = self.all_steps[frame_idx]
-        R = self.cam_dict["R"][step] if "R" in self.cam_dict else np.eye(3)
-        t = self.cam_dict["t"][step] if "t" in self.cam_dict else np.zeros(3)
-        focal = self.cam_dict["focal"][step] if "focal" in self.cam_dict else 1.0
-        pp = self.cam_dict["pp"][step] if "pp" in self.cam_dict else (1.0, 1.0)
-
-        offset = 0.5
-        viewing_dir = R[:, 2]
-        position = t - viewing_dir * offset
-        look_at = t + viewing_dir * 0.5
-        up = -R[:, 1]
-
-        for client in self.server.get_clients().values():
-            client.camera.up_direction = tuple(up)
-            client.camera.position = tuple(position)
-            client.camera.look_at = tuple(look_at)
-
-    def _connect_client(self, client):
-        """Setup client connection callbacks."""
-        pass
-
-    def parse_pc_data(self, pc, color, conf=None, edge_color=[0.251, 0.702, 0.902], 
-                      set_border_color=False, downsample_factor=1):
-        """Parse and filter point cloud data (完全按照 PointCloudViewer)"""
-        pred_pts = pc.reshape(-1, 3)
-        pc_shape = pc.shape[:2]  # (H, W) of point cloud
-
-        if set_border_color and edge_color is not None:
-            color = self._set_color_border(color, color=edge_color)
-        
-        # Ensure color matches point cloud dimensions
-        if color.shape[:2] != pc_shape:
-            color = cv2.resize(color, (pc_shape[1], pc_shape[0]))
-        
-        if np.isnan(color).any():
-            color = np.zeros((pred_pts.shape[0], 3))
-            color[:, 2] = 1
-        else:
-            color = color.reshape(-1, 3)
-
-        # Remove NaN / Inf points
-        valid = np.isfinite(pred_pts).all(axis=1)
-        if not valid.all():
-            pred_pts = pred_pts[valid]
-            color = color[valid]
-            if conf is not None:
-                conf = conf.reshape(-1)[valid]
-
-        # Confidence threshold filter
-        if conf is not None:
-            conf_flat = conf.reshape(-1) if conf.ndim > 1 else conf
-            mask = conf_flat > self.vis_threshold
-            pred_pts = pred_pts[mask]
-            color = color[mask]
-
-        if len(pred_pts) == 0:
-            return pred_pts, color
-
-        # Downsample
-        if downsample_factor > 1 and len(pred_pts) > 0:
-            indices = np.arange(0, len(pred_pts), downsample_factor)
-            pred_pts = pred_pts[indices]
-            color = color[indices]
-
-        return pred_pts, color
-
-    @staticmethod
-    def _set_color_border(image, border_width=5, color=[1, 0, 0]):
-        """Add colored border to image."""
-        image[:border_width, :, 0] = color[0]
-        image[:border_width, :, 1] = color[1]
-        image[:border_width, :, 2] = color[2]
-        image[-border_width:, :, 0] = color[0]
-        image[-border_width:, :, 1] = color[1]
-        image[-border_width:, :, 2] = color[2]
-        image[:, :border_width, 0] = color[0]
-        image[:, :border_width, 1] = color[1]
-        image[:, :border_width, 2] = color[2]
-        image[:, -border_width:, 0] = color[0]
-        image[:, -border_width:, 1] = color[1]
-        image[:, -border_width:, 2] = color[2]
-        return image
-
-    def _regenerate_point_clouds(self):
-        """Regenerate all point clouds with current settings."""
-        for handle in self.pc_handles:
-            try:
-                handle.remove()
-            except (KeyError, AttributeError):
-                pass
-        self.pc_handles.clear()
-
-        for i, step in enumerate(self.all_steps):
-            if step not in self.pcs:
-                continue
-            pc = self.pcs[step]["pc"]
-            color = self.pcs[step]["color"]
-            conf = self.pcs[step]["conf"]
-
-            pred_pts, pc_color = self.parse_pc_data(
-                pc, color, conf, set_border_color=True,
-                downsample_factor=self.downsample_slider.value
-            )
-
-            handle = self.server.scene.add_point_cloud(
-                name=f"/frames/{step}/pred_pts",
-                points=pred_pts,
-                colors=pc_color,
-                point_size=self.psize_slider.value,
-            )
-            self.pc_handles.append(handle)
-
-    def _regenerate_cameras(self):
-        """Regenerate camera visualizations with current settings."""
-        for handle in self.cam_handles:
-            try:
-                handle.remove()
-            except (KeyError, AttributeError):
-                pass
-        self.cam_handles.clear()
-        self.traj_list.clear()
-
-        if self.show_camera and self.cam_dict is not None:
-            downsample_factor = int(self.camera_downsample_slider.value)
-            for i, step in enumerate(self.all_steps):
-                if i % downsample_factor == 0:
-                    self.add_camera(step)
-
-    def add_camera(self, step):
-        """Add camera visualization for a frame (完全按照 PointCloudViewer)"""
-        cam = self.cam_dict
-        if cam is None:
-            return
-
-        focal = cam["focal"][step] if "focal" in cam else 1.0
-        pp = cam["pp"][step] if "pp" in cam else (1.0, 1.0)
-        R = cam["R"][step] if "R" in cam else np.eye(3)
-        t = cam["t"][step] if "t" in cam else np.zeros(3)
-
-        q = tf.SO3.from_matrix(R).wxyz
-        fov = 2 * np.arctan(pp[0] / focal)
-        aspect = pp[0] / pp[1]
-        self.traj_list.append((q, t))
-
-        step_index = self.all_steps.index(step) if step in self.all_steps else 0
-        camera_color = self.camera_colors[step_index]
-        camera_color_rgb = tuple((camera_color[:3] * 255).astype(int))
-
-        self.server.scene.add_frame(
-            f"/frames/{step}/camera_frame",
-            wxyz=q,
-            position=t,
-            axes_length=0.05,
-            axes_radius=0.002,
-            origin_radius=0.002,
-        )
-
-        frustum_handle = self.server.scene.add_camera_frustum(
-            name=f"/frames/{step}/camera",
-            fov=fov,
-            aspect=aspect,
-            wxyz=q,
-            position=t,
-            scale=self.camsize_slider.value,
-            color=camera_color_rgb,
-        )
-
-        @frustum_handle.on_click
-        def _(event):
-            look_at_pt = t + R[:, 2] * 0.5
-            up_dir = -R[:, 1]
-            for client in self.server.get_clients().values():
-                client.camera.up_direction = tuple(up_dir)
-                client.camera.position = tuple(t)
-                client.camera.look_at = tuple(look_at_pt)
-
-        self.cam_handles.append(frustum_handle)
-
-    def add_frame(self, world_points, colors, conf, extrinsic, intrinsic, image):
-        """Add a new frame to the viewer - model maintains unified world coordinate system"""
-        step = len(self.all_steps)
-        
-        # Compute c2w from extrinsic (already c2w from postprocess)
-        c2w = np.eye(4)
-        c2w[:3, :4] = extrinsic
-        current_R = c2w[:3, :3]
-        current_t = c2w[:3, 3]
-        
-        # Store point cloud data directly (model already in unified world coordinates)
-        self.pcs[step] = {
-            "pc": world_points,
-            "color": colors,
-            "conf": conf,
-        }
-        self.all_steps.append(step)
-        
-        # Store original image
-        self.original_images.append(image)
-        
-        # Update camera dictionary (use original extrinsic, no transformation)
-        if self.cam_dict is None:
-            self.cam_dict = {"focal": [], "pp": [], "R": [], "t": []}
-        
-        self.cam_dict["focal"].append(intrinsic[0, 0])
-        self.cam_dict["pp"].append((intrinsic[0, 2], intrinsic[1, 2]))
-        self.cam_dict["R"].append(current_R)
-        self.cam_dict["t"].append(current_t)
-        
-        # Update camera colors
-        num_cameras = len(self.all_steps)
-        if num_cameras > 1:
-            normalized_indices = np.array(list(range(num_cameras))) / (num_cameras - 1)
-        else:
-            normalized_indices = np.array([0.0])
-        cmap = cm.get_cmap('viridis')
-        self.camera_colors = cmap(normalized_indices)
-        
-        # Create frame node
-        if not hasattr(self, 'frame_base_node'):
-            self.frame_base_node = self.server.scene.add_frame("/frames", show_axes=False)
-        
-        frame_node = self.server.scene.add_frame(f"/frames/{step}", show_axes=False)
-        self.frame_nodes.append(frame_node)
-        
-        # Accumulate point cloud for persistent mapping
-        pc = self.pcs[step]["pc"]
-        color = self.pcs[step]["color"]
-        conf_val = self.pcs[step]["conf"]
-
-        pred_pts, pc_color = self.parse_pc_data(
-            pc, color, conf_val, set_border_color=True,
-            downsample_factor=self.downsample_slider.value
-        )
-        
-        # Add to accumulated point cloud
-        if self.accumulated_points is None:
-            self.accumulated_points = pred_pts
-            self.accumulated_colors = pc_color
-            if conf_val is not None:
-                conf_flat = conf_val.reshape(-1) if conf_val.ndim > 1 else conf_val
-                self.accumulated_conf = conf_flat
-        else:
-            self.accumulated_points = np.concatenate([self.accumulated_points, pred_pts], axis=0)
-            self.accumulated_colors = np.concatenate([self.accumulated_colors, pc_color], axis=0)
-            if conf_val is not None and self.accumulated_conf is not None:
-                conf_flat = conf_val.reshape(-1) if conf_val.ndim > 1 else conf_val
-                self.accumulated_conf = np.concatenate([self.accumulated_conf, conf_flat], axis=0)
-        
-        # Update accumulated point cloud visualization
-        if self.accumulated_pc_handle is not None:
-            try:
-                self.accumulated_pc_handle.remove()
-            except (KeyError, AttributeError):
-                pass
-        
-        self.accumulated_pc_handle = self.server.scene.add_point_cloud(
-            name="/accumulated/point_cloud",
-            points=self.accumulated_points,
-            colors=self.accumulated_colors,
-            point_size=self.psize_slider.value,
-        )
-        
-        # Add camera for this frame
-        if self.show_camera:
-            self.add_camera(step)
-        
-        # Update frame slider
-        if self.gui_timestep is not None:
-            self.gui_timestep.max = len(self.all_steps) - 1
-        
-        # Update current frame image
-        if self.current_frame_image is not None and len(self.original_images) > 0:
-            self.current_frame_image.image = self.original_images[-1]
-        
-        # Update visibility based on mode
-        self.update_frame_visibility()
-
-    def update_frame_visibility(self):
-        """Update frame visibility based on current timestep and mode."""
-        if not hasattr(self, 'frame_nodes') or self.gui_timestep is None:
-            return
-
-        current_timestep = self.gui_timestep.value
-        for i, frame_node in enumerate(self.frame_nodes):
-            frame_node.visible = (
-                i <= current_timestep if not self.fourd else i == current_timestep
-            )
-
-    def clear_all_frames(self):
-        """Clear all frames and point clouds from the viewer (for replacement mode)."""
-        # Clear accumulated point cloud
-        if self.accumulated_pc_handle is not None:
-            try:
-                self.accumulated_pc_handle.remove()
-            except (KeyError, AttributeError):
-                pass
-            self.accumulated_pc_handle = None
-        
-        # Reset accumulated data
-        self.accumulated_points = None
-        self.accumulated_colors = None
-        self.accumulated_conf = None
-        
-        # Remove camera frustums
-        for handle in self.cam_handles:
-            try:
-                handle.remove()
-            except (KeyError, AttributeError):
-                pass
-        self.cam_handles = []
-        
-        # Remove frame nodes
-        for node in self.frame_nodes:
-            try:
-                node.remove()
-            except (KeyError, AttributeError):
-                pass
-        self.frame_nodes = []
-        
-        # Clear stored data
-        self.pcs = {}
-        self.cam_dict = None
-        self.all_steps = []
-        self.original_images = []
-        self.traj_list = []
-        
-        # Reset frame slider
-        if self.gui_timestep is not None:
-            self.gui_timestep.max = 0
-            self.gui_timestep.value = 0
-
-    def setup_animation(self):
-        """Setup animation controls."""
-        with self.server.gui.add_folder("Playback"):
-            self.gui_timestep = self.server.gui.add_slider(
-                "Train Step", min=0, max=max(0, len(self.all_steps) - 1), step=1, initial_value=0, disabled=False
-            )
-            gui_next_frame = self.server.gui.add_button("Next Step", disabled=False)
-            gui_prev_frame = self.server.gui.add_button("Prev Step", disabled=False)
-            gui_playing = self.server.gui.add_checkbox("Playing", True)
-            gui_framerate = self.server.gui.add_slider("FPS", min=1, max=60, step=0.1, initial_value=10)
-
-        @gui_next_frame.on_click
-        def _(_):
-            if self.gui_timestep is not None:
-                self.gui_timestep.value = (self.gui_timestep.value + 1) % len(self.all_steps)
-
-        @gui_prev_frame.on_click
-        def _(_):
-            if self.gui_timestep is not None:
-                self.gui_timestep.value = (self.gui_timestep.value - 1) % len(self.all_steps)
-
-        @gui_playing.on_update
-        def _(_):
-            if self.gui_timestep is not None:
-                self.gui_timestep.disabled = gui_playing.value
-            gui_next_frame.disabled = gui_playing.value
-            gui_prev_frame.disabled = gui_playing.value
-
-        @self.gui_timestep.on_update
-        def _(_):
-            if self.gui_timestep is None:
-                return
-            current_timestep = self.gui_timestep.value
-            
-            # Update current frame image
-            if self.current_frame_image is not None and current_timestep < len(self.original_images):
-                self.current_frame_image.image = self.original_images[current_timestep]
-
-        # Animation loop
-        def animate_loop():
-            while True:
-                if self.gui_timestep is not None and gui_playing.value:
-                    self.gui_timestep.value = (self.gui_timestep.value + 1) % len(self.all_steps)
-                self.update_frame_visibility()
-                time.sleep(1.0 / gui_framerate.value)
-        
-        animate_thread = threading.Thread(target=animate_loop, daemon=True)
-        animate_thread.start()
-
-
 # =============================================================================
 # Real-time processing
 # =============================================================================
@@ -804,353 +162,8 @@ class FrameBuffer:
             return None
 
 
-def camera_capture_thread(cap, buffer, fps_list):
-    """Camera capture thread with dynamic FPS"""
-    frame_count = 0
-    fps_idx = 0  # Index into fps_list
-    frames_until_switch = fps_list[0][1]  # Frames to capture at current FPS
-    
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        
-        current_fps = fps_list[fps_idx][0]
-        frame_interval = max(1, round(30 / current_fps))
-        
-        if frame_count % frame_interval == 0:
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            buffer.put(frame_rgb)
-            frames_until_switch -= 1
-            
-            # Switch to next FPS level if needed
-            if frames_until_switch <= 0 and fps_idx < len(fps_list) - 1:
-                fps_idx += 1
-                frames_until_switch = fps_list[fps_idx][1]
-        
-        frame_count += 1
-
-
-def process_camera_stream(model, device, dtype, args):
-    """Process camera stream with LingBot-MAP inference"""
-    cap = cv2.VideoCapture(args.camera_id)
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open camera {args.camera_id}")
-    
-    print(f"Camera FPS: 30, Target processing FPS: {args.fps}")
-    
-    # Initialize frame buffer
-    frame_buffer = FrameBuffer(max_size=args.kv_cache_sliding_window)
-    
-    # Start camera capture thread with dynamic FPS
-    # Format: [(fps, num_frames), ...] - num_frames=0 means infinite
-    fps_list = [
-        (10, 200),  # First 200 frames at 10 FPS
-        (3, 0),     # After that, 3 FPS indefinitely
-    ]
-    capture_thread = threading.Thread(
-        target=camera_capture_thread,
-        args=(cap, frame_buffer, fps_list),
-        daemon=True
-    )
-    capture_thread.start()
-    
-    # Initialize viewer
-    viewer = RealTimeViewer(args)
-    print(f"Viewer server started on port {args.port}")
-    print(f"Open http://localhost:{args.port} in your browser")
-    
-    # Main processing loop
-    print("Starting real-time camera streaming...")
-    
-    # Collect initial scale frames
-    scale_frames = []
-    scale_images = []
-    
-    print(f"Collecting {args.num_scale_frames} scale frames...")
-    while len(scale_frames) < args.num_scale_frames:
-        frame = frame_buffer.get(block=True, timeout=5.0)
-        if frame is None:
-            print("Timeout waiting for scale frames")
-            cap.release()
-            return
-        
-        img_tensor = preprocess_image(frame, mode="crop", 
-                                     image_size=args.image_size, 
-                                     patch_size=args.patch_size)
-        scale_frames.append(img_tensor)
-        scale_images.append(frame)
-        print(f"  Collected {len(scale_frames)}/{args.num_scale_frames}")
-    
-    # Stack scale frames: convert to [B, S, C, H, W] format
-    scale_batch = torch.stack(scale_frames, dim=0).unsqueeze(0).to(device)
-    
-    # Process scale frames using model.inference_streaming (like demo.py)
-    model.clean_kv_cache()
-    
-    print("Processing scale frames...")
-    with torch.no_grad(), torch.amp.autocast("cuda", dtype=dtype):
-        predictions = model.inference_streaming(
-            scale_batch,
-            num_scale_frames=args.num_scale_frames,
-            keyframe_interval=args.keyframe_interval,
-        )
-    
-    # Post-process (like demo.py)
-    images_for_post = torch.stack([
-        torch.from_numpy(cv2.resize(f, (args.image_size, args.image_size))).permute(2, 0, 1)
-        for f in scale_images
-    ]).float() / 255.0
-    
-    predictions, images_cpu = postprocess(predictions, images_for_post)
-    vis_predictions = prepare_for_visualization(predictions, images_cpu)
-    
-    # Extract data for visualization
-    world_points = vis_predictions.get("world_points", vis_predictions.get("depth"))
-    depth_conf = vis_predictions.get("depth_conf")
-    extrinsic = vis_predictions["extrinsic"]
-    intrinsic = vis_predictions["intrinsic"]
-    images = vis_predictions["images"]
-    
-    # For scale frames, use depth map if world_points is not available
-    # Check if it's depth (shape [..., 1]) vs already unprojected world_points (shape [..., 3])
-    if world_points.ndim == 4 and world_points.shape[-1] == 1:  # depth map
-        world_points = unproject_depth_map_to_point_map(
-            torch.from_numpy(world_points),
-            torch.from_numpy(extrinsic),
-            torch.from_numpy(intrinsic)
-        )
-    
-    # Add scale frames to viewer
-    for i in range(args.num_scale_frames):
-        viewer.add_frame(
-            world_points[i],
-            images[i].transpose(1, 2, 0),  # (H, W, 3)
-            depth_conf[i] if depth_conf is not None else None,
-            extrinsic[i],
-            intrinsic[i],
-            (images[i] * 255).astype(np.uint8).transpose(1, 2, 0)
-        )
-    
-    # Setup animation after scale frames are added
-    viewer.setup_animation()
-    
-    # ========== Periodic batch processing with KV cache reset ==========
-    # Strategy:
-    # 1. First batch: frames 0-199 (200 frames)
-    # 2. Subsequent batches: frames N-100 to N+100 (200 frames with 100 overlap)
-    # 3. Reset KV cache before each batch for fresh inference
-    # 4. Replace point cloud instead of accumulating
-    # 5. Use inference_streaming with output_device=cpu for memory optimization
-    
-    batch_size = 200  # Process 200 frames per batch
-    overlap_size = 100  # Overlap 100 frames with previous batch
-    new_frames_per_batch = batch_size - overlap_size  # 100 new frames per batch
-    
-    print(f"Starting periodic batch processing (batch={batch_size}, overlap={overlap_size}, new={new_frames_per_batch})...")
-    print(f"Current GPU memory usage before processing: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-    
-    # Buffer to hold the sliding window
-    sliding_window = []
-    batch_idx = 0
-    
-    while True:
-        # Collect frames for this batch
-        print(f"\n=== Batch {batch_idx + 1} ===")
-        
-        # For first batch: collect full batch size
-        # For subsequent batches: keep overlap frames + collect new frames
-        if batch_idx == 0:
-            needed_frames = batch_size
-            print(f"Collecting {needed_frames} frames (first batch)...")
-        else:
-            needed_frames = batch_size - overlap_size
-            print(f"Collecting {needed_frames} new frames (keeping {overlap_size} from previous batch)...")
-        
-        # Collect new frames
-        while len(sliding_window) < batch_size:
-            try:
-                frame = frame_buffer.get(block=True, timeout=5.0)
-                if frame is not None:
-                    sliding_window.append(frame)
-                    current_count = len(sliding_window)
-                    if batch_idx == 0:
-                        if current_count % 50 == 0:
-                            print(f"  Collected {current_count}/{batch_size}")
-                    else:
-                        if current_count % 25 == 0:
-                            print(f"  Collected {current_count - overlap_size}/{needed_frames} new frames")
-            except queue.Empty:
-                if len(sliding_window) > 0:
-                    print(f"  Timeout, using {len(sliding_window)} frames")
-                    break
-                continue
-        
-        # Skip if not enough frames for first batch
-        if len(sliding_window) < batch_size and batch_idx == 0:
-            print(f"Waiting for more frames... ({len(sliding_window)}/{batch_size})")
-            continue
-        
-        print(f"Processing batch of {len(sliding_window)} frames...")
-        print(f"GPU memory before processing batch: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-        
-        # Clean KV cache before each batch (fresh start)
-        model.clean_kv_cache()
-        torch.cuda.empty_cache()
-        
-        # Preprocess the batch
-        batch_tensors = []
-        batch_resized = []
-        
-        for frame in sliding_window:
-            img_tensor = preprocess_image(frame, mode="crop",
-                                        image_size=args.image_size,
-                                        patch_size=args.patch_size)
-            img_tensor = img_tensor.to(device)
-            batch_tensors.append(img_tensor)
-            batch_resized.append(cv2.resize(frame, (args.image_size, args.image_size)))
-        
-        # Stack to [B, S, C, H, W]
-        batch_tensor = torch.stack(batch_tensors, dim=0).unsqueeze(0)
-        del batch_tensors
-        
-        # Process batch with streaming inference (fresh KV cache)
-        # Use output_device=cpu to offload predictions during inference (critical for memory)
-        with torch.no_grad(), torch.amp.autocast("cuda", dtype=dtype):
-            batch_output = model.inference_streaming(
-                batch_tensor,
-                num_scale_frames=min(4, len(sliding_window)),
-                keyframe_interval=args.keyframe_interval,
-                output_device=torch.device("cpu"),  # Offload to CPU to prevent GPU OOM
-            )
-        
-        print(f"GPU memory after inference: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-        
-        # Post-process
-        images_for_post = torch.stack([
-            torch.from_numpy(cv2.resize(f, (args.image_size, args.image_size))).permute(2, 0, 1)
-            for f in batch_resized
-        ]).float() / 255.0
-        
-        batch_output, _ = postprocess(batch_output, images_for_post)
-        vis_output = prepare_for_visualization(batch_output, images_for_post)
-        
-        # Extract data
-        world_points = vis_output.get("world_points", vis_output.get("depth"))
-        depth_conf = vis_output.get("depth_conf")
-        extrinsic = vis_output["extrinsic"]
-        intrinsic = vis_output["intrinsic"]
-        images = vis_output["images"]
-        
-        # Clear previous point cloud (REPLACE instead of accumulate)
-        viewer.clear_all_frames()
-        
-        # Add all frames from current batch to viewer
-        for i in range(len(sliding_window)):
-            pts = world_points[i]
-            conf = depth_conf[i] if depth_conf is not None else None
-            ext = extrinsic[i]
-            intr = intrinsic[i]
-            img = images[i]
-            
-            # Unproject if needed
-            if pts.ndim == 3 and pts.shape[-1] == 1:
-                pts = unproject_depth_map_to_point_map(
-                    torch.from_numpy(pts).unsqueeze(0),
-                    torch.from_numpy(ext).unsqueeze(0),
-                    torch.from_numpy(intr).unsqueeze(0)
-                )[0]
-            
-            # Add to viewer
-            viewer.add_frame(
-                pts,
-                img.transpose(1, 2, 0),
-                conf,
-                ext,
-                intr,
-                (img * 255).astype(np.uint8).transpose(1, 2, 0)
-            )
-        
-        # Update sliding window: keep last overlap_size frames for next batch
-        if len(sliding_window) >= overlap_size:
-            sliding_window = sliding_window[-overlap_size:]
-        
-        batch_idx += 1
-        
-        # === AGGRESSIVE MEMORY CLEANUP ===
-        model.clean_kv_cache()
-        
-        # Delete all temporary tensors immediately after use
-        try:
-            del window_tensor
-        except:
-            pass
-        try:
-            del window_output
-        except:
-            pass
-        try:
-            del images_for_post
-        except:
-            pass
-        try:
-            del vis_window
-        except:
-            pass
-        try:
-            del world_points
-        except:
-            pass
-        try:
-            del depth_conf
-        except:
-            pass
-        try:
-            del extrinsic
-        except:
-            pass
-        try:
-            del intrinsic
-        except:
-            pass
-        try:
-            del images
-        except:
-            pass
-        try:
-            del pts
-        except:
-            pass
-        try:
-            del conf
-        except:
-            pass
-        try:
-            del ext
-        except:
-            pass
-        try:
-            del intr
-        except:
-            pass
-        try:
-            del img
-        except:
-            pass
-        
-        # Force garbage collection and GPU memory cleanup
-        import gc
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            print(f"GPU memory after cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-        
-        # Print progress every batch
-        print(f"Completed batch {batch_idx}, total frames processed: {batch_idx * new_frames_per_batch + batch_size}")
-
-
 # =============================================================================
-# Frontend Stream Processing (复用 process_camera_stream 的流式逻辑)
+# Frontend Stream Processing (复用流式推理逻辑)
 # =============================================================================
 
 def process_frontend_stream(model, device, dtype, frame_queue, result_queue, 
@@ -1495,193 +508,6 @@ def start_http_server(model, device, dtype, image_size, patch_size, http_port=80
         png_data = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9c\x63\x00\x01\x00\x00\x05\x00\x01\r\n-\x8a\x00\x00\x00\x00IEND\xaeB`\x82'
         return Response(content=png_data, media_type="image/png")
     
-    @app.websocket("/ws")
-    async def websocket_stream(websocket: WebSocket):
-        """WebSocket 流式接口 - 批量上传模式（参考 viser_wrapper 逻辑）"""
-        await websocket.accept()
-        print("🔌 WebSocket 客户端已连接")
-        
-        BATCH_SIZE = 200
-        batch_frames = []
-        is_processing = False
-        CONF_THRESHOLD_PERCENT = 50.0  # 与 viser_wrapper 一致
-        
-        try:
-            while True:
-                data = await websocket.receive_json()
-                frame_base64 = data.get('frame')
-                frame_id = data.get('frame_id', 0)
-                is_batch_end = data.get('batch_end', False)
-                
-                if frame_base64:
-                    try:
-                        import base64
-                        frame_data = base64.b64decode(frame_base64.split(',')[1] if ',' in frame_base64 else frame_base64)
-                        
-                        if not frame_data or len(frame_data) == 0:
-                            print(f"❌ 帧 #{frame_id} 数据为空，跳过")
-                        else:
-                            import numpy as np
-                            frame_array = np.frombuffer(frame_data, dtype=np.uint8)
-                            
-                            if frame_array.size == 0:
-                                print(f"❌ 帧 #{frame_id} 数组为空，跳过")
-                            else:
-                                frame = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
-                                
-                                if frame is None:
-                                    print(f"❌ 帧 #{frame_id} 解码失败，跳过")
-                                else:
-                                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                                    batch_frames.append(frame_rgb)
-                                    print(f"🔹 收到帧 #{frame_id}，当前队列: {len(batch_frames)}/{BATCH_SIZE}")
-                    except Exception as e:
-                        print(f"❌ 接收帧失败: {type(e).__name__}: {e}")
-                        await websocket.send_json({"type": "error", "msg": str(e)})
-                
-                if len(batch_frames) >= BATCH_SIZE or (is_batch_end and len(batch_frames) > 0):
-                    if is_processing:
-                        await websocket.send_json({"type": "error", "msg": "正在处理上一批，请等待"})
-                        continue
-                    
-                    is_processing = True
-                    batch_size = len(batch_frames)
-                    print(f"🚀 开始批量处理 {batch_size} 帧...")
-                    await websocket.send_json({"type": "processing_start", "frame_count": batch_size})
-                    
-                    try:
-                        batch_tensors = []
-                        batch_resized = []
-                        
-                        for frame in batch_frames:
-                            img_tensor = preprocess_image(frame, mode="crop",
-                                                        image_size=image_size,
-                                                        patch_size=patch_size)
-                            img_tensor = img_tensor.to(device)
-                            batch_tensors.append(img_tensor)
-                            batch_resized.append(cv2.resize(frame, (image_size, image_size)))
-                        
-                        batch_tensor = torch.stack(batch_tensors, dim=0).unsqueeze(0)
-                        del batch_tensors
-                        
-                        model.clean_kv_cache()
-                        torch.cuda.empty_cache()
-                        
-                        print("📊 正在进行模型推理...")
-                        with torch.no_grad(), torch.amp.autocast("cuda", dtype=dtype):
-                            batch_output = model.inference_streaming(
-                                batch_tensor,
-                                num_scale_frames=10,
-                                keyframe_interval=2,
-                            )
-                        
-                        images_for_post = torch.stack([
-                            torch.from_numpy(f).permute(2, 0, 1) for f in batch_resized
-                        ]).float() / 255.0
-                        
-                        predictions, images_cpu = postprocess(batch_output, images_for_post)
-                        vis_predictions = prepare_for_visualization(predictions, images_cpu)
-                        
-                        world_points_map = vis_predictions.get("world_points")
-                        conf_map = vis_predictions.get("world_points_conf")
-                        depth_map = vis_predictions.get("depth")
-                        depth_conf = vis_predictions.get("depth_conf")
-                        extrinsic = vis_predictions["extrinsic"]
-                        intrinsic = vis_predictions["intrinsic"]
-                        
-                        if isinstance(extrinsic, torch.Tensor):
-                            extrinsic = extrinsic.cpu().numpy()
-                        if isinstance(intrinsic, torch.Tensor):
-                            intrinsic = intrinsic.cpu().numpy()
-                        
-                        use_point_map = world_points_map is not None
-                        if not use_point_map:
-                            world_points = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
-                            conf = depth_conf
-                        else:
-                            world_points = world_points_map
-                            conf = conf_map
-                        
-                        if isinstance(world_points, torch.Tensor):
-                            world_points = world_points.cpu().numpy()
-                        if isinstance(conf, torch.Tensor):
-                            conf = conf.cpu().numpy()
-                        
-                        colors = images_cpu.permute(0, 2, 3, 1).cpu().numpy()
-                        
-                        S, H, W = world_points.shape[:3]
-                        points_all = world_points.reshape(-1, 3)
-                        colors_cropped = colors[:S, :H, :W, :]
-                        colors_all = (colors_cropped.reshape(-1, 3) * 255).astype(np.uint8)
-                        conf_all = conf.reshape(-1)
-                        
-                        threshold_val = np.percentile(conf_all, CONF_THRESHOLD_PERCENT)
-                        conf_mask = (conf_all >= threshold_val) & (conf_all > 0.1)
-                        
-                        points_filtered = points_all[conf_mask]
-                        colors_filtered = colors_all[conf_mask]
-                        
-                        scene_center = np.mean(points_filtered, axis=0)
-                        points_centered = points_filtered - scene_center
-                        
-                        cam_to_world_mat = closed_form_inverse_se3(extrinsic)
-                        cam_to_world = cam_to_world_mat[:, :3, :]
-                        cam_to_world[..., -1] -= scene_center
-                        
-                        frame_indices = np.repeat(np.arange(S), H * W)[conf_mask]
-                        
-                        for i in range(S):
-                            frame_mask = frame_indices == i
-                            frame_points = points_centered[frame_mask]
-                            frame_colors = colors_filtered[frame_mask]
-                            
-                            max_points = 5000
-                            if len(frame_points) > max_points:
-                                indices = np.linspace(0, len(frame_points) - 1, max_points, dtype=int)
-                                frame_points = frame_points[indices]
-                                frame_colors = frame_colors[indices]
-                            
-                            points = frame_points.flatten().tolist()
-                            colors = frame_colors.flatten().tolist()
-                            
-                            ply_filename = f"batch_{frame_id}_{i}.ply"
-                            save_point_cloud_ply_with_color(points, colors, ply_filename)
-                            
-                            cam_pose = {
-                                'x': float(cam_to_world[i, 0, 3]),
-                                'y': float(cam_to_world[i, 1, 3]),
-                                'z': float(cam_to_world[i, 2, 3])
-                            }
-                            
-                            print(f"📤 发送帧 {i} 的点云: {len(points)//3} 个点")
-                            await websocket.send_json({
-                                'type': 'result',
-                                'frame_id': f'{frame_id}_{i}',
-                                'point_count': len(points) // 3,
-                                'point_cloud': points,
-                                'point_colors': colors,
-                                'point_cloud_url': f'/point_cloud/{ply_filename}',
-                                'camera_pose': cam_pose,
-                                'scene_center': scene_center.tolist()
-                            })
-                        
-                        await websocket.send_json({"type": "processing_done", "frame_count": batch_size})
-                        print(f"✅ 批量处理完成，共 {batch_size} 帧")
-                        
-                    except Exception as e:
-                        print(f"❌ 批量处理失败: {type(e).__name__}: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        await websocket.send_json({"type": "error", "msg": str(e)})
-                    
-                    batch_frames = []
-                    is_processing = False
-        
-        except WebSocketDisconnect:
-            print("🔌 WebSocket 客户端已断开")
-        except Exception as e:
-            print(f"❌ WebSocket 错误: {type(e).__name__}: {e}")
-    
     @app.post("/upload")
     async def upload(file: UploadFile = File(...)):
         try:
@@ -1792,40 +618,364 @@ def start_http_server(model, device, dtype, image_size, patch_size, http_port=80
             traceback.print_exc()
             return {"code": 500, "msg": f"处理失败: {str(e)}"}
     
+    @app.post("/batch-inference")
+    async def batch_inference(request: Request):
+        """HTTP 批量推理接口 - 接收base64图片数组，返回所有点云结果"""
+        try:
+            if model is None:
+                return {"code": 500, "msg": "模型未加载"}
+            
+            body = await request.json()
+            frames_base64 = body.get('frames', [])
+            batch_id = body.get('batch_id', 0)
+            
+            if not frames_base64:
+                return {"code": 400, "msg": "没有帧数据"}
+            
+            num_frames = len(frames_base64)
+            print(f"🚀 开始批量处理 {num_frames} 帧, batch_id={batch_id}")
+            
+            # 检查前几帧的大小
+            if num_frames > 0:
+                for i in range(min(3, num_frames)):
+                    frame_len = len(frames_base64[i])
+                    print(f"   帧 #{i} Base64长度: {frame_len} 字符")
+                    if frame_len < 100:
+                        print(f"   ⚠️ 帧 #{i} 可能是空帧或数据不完整")
+            
+            torch.cuda.empty_cache()
+            import gc
+            gc.collect()
+            
+            # ========== 第一步：解码所有帧并预处理 ==========
+            print("📷 解码并预处理所有帧...")
+            batch_tensors = []
+            batch_resized = []  # 保存调整大小后的原始图像（用于后处理）
+            preprocess_image_list = []  # 保存预处理后的张量，用于逐帧回退
+            valid_frame_indices = []
+            empty_frame_count = 0
+            decode_fail_count = 0
+            
+            for i, frame_b64 in enumerate(frames_base64):
+                try:
+                    import base64
+                    
+                    # 检查Base64数据是否为空
+                    if not frame_b64 or len(frame_b64) < 100:
+                        print(f"⚠️ 帧 #{i} Base64数据为空或过短 (长度={len(frame_b64)})")
+                        empty_frame_count += 1
+                        continue
+                    
+                    frame_data = base64.b64decode(frame_b64.split(',')[1] if ',' in frame_b64 else frame_b64)
+                    frame_array = np.frombuffer(frame_data, dtype=np.uint8)
+                    
+                    if frame_array.size == 0:
+                        print(f"⚠️ 帧 #{i} 解码后数组为空，跳过")
+                        empty_frame_count += 1
+                        continue
+                    
+                    if frame_array.size < 100:
+                        print(f"⚠️ 帧 #{i} 数据量过小 ({frame_array.size} 字节)，可能是空图像")
+                    
+                    frame = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
+                    if frame is None:
+                        print(f"⚠️ 帧 #{i} 解码失败，跳过")
+                        decode_fail_count += 1
+                        continue
+                    
+                    # 检查解码后的图像尺寸
+                    h, w = frame.shape[:2]
+                    if h < 10 or w < 10:
+                        print(f"⚠️ 帧 #{i} 图像尺寸过小 ({w}x{h})，可能是无效图像")
+                    
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    
+                    # 预处理图像
+                    img_tensor = preprocess_image(frame_rgb, mode="crop",
+                                                image_size=image_size,
+                                                patch_size=patch_size)
+                    batch_tensors.append(img_tensor)
+                    preprocess_image_list.append(img_tensor.clone())  # 保存副本用于回退
+                    
+                    # 保存调整大小后的图像（用于后处理）
+                    batch_resized.append(cv2.resize(frame_rgb, (image_size, image_size)))
+                    
+                    valid_frame_indices.append(i)
+                    
+                except Exception as e:
+                    print(f"⚠️ 帧 #{i} 预处理失败: {type(e).__name__}: {e}")
+                    continue
+            
+            if len(batch_tensors) == 0:
+                return {"code": 400, "msg": "没有有效的帧数据"}
+            
+            print(f"✅ 成功预处理 {len(batch_tensors)} 帧")
+            
+            # ========== 第二步：真正的批量推理 ==========
+            print("🔄 执行批量推理...")
+            torch.cuda.empty_cache()
+            
+            # 堆叠成批量张量 [B, C, H, W] -> [1, B, C, H, W]
+            batch_tensor = torch.stack(batch_tensors, dim=0).unsqueeze(0).to(device)
+            del batch_tensors
+            
+            # ========== 详细调试信息 ==========
+            print(f"\n📋 批量推理调试信息:")
+            print(f"   输入张量形状: {batch_tensor.shape}")
+            print(f"   输入张量设备: {batch_tensor.device}")
+            print(f"   输入张量元素数: {batch_tensor.numel()}")
+            print(f"   输入张量数据类型: {batch_tensor.dtype}")
+            print(f"   输入统计: min={batch_tensor.min().item():.4f}, max={batch_tensor.max().item():.4f}, mean={batch_tensor.mean().item():.4f}")
+            
+            # 检查图像尺寸是否符合模型要求
+            B, S, C, H, W = batch_tensor.shape
+            print(f"   批量大小(B): {B}, 序列长度(S): {S}, 通道(C): {C}, 高度(H): {H}, 宽度(W): {W}")
+            
+            # 强制清理模型状态（确保与文件模式一致）
+            print("\n🧹 强制清理模型状态...")
+            if hasattr(model, 'kv_cache') and model.kv_cache is not None:
+                model.kv_cache = None
+            model.clean_kv_cache()
+            torch.cuda.empty_cache()
+            
+            # ========== 执行推理 ==========
+            try:
+                print("\n🚀 开始推理...")
+                with torch.no_grad(), torch.amp.autocast("cuda", dtype=dtype):
+                    batch_output = model.inference_streaming(
+                        batch_tensor,
+                        num_scale_frames=0,
+                        keyframe_interval=10,
+                    )
+                
+                print(f"✅ 批量推理完成")
+                print(f"📤 输出类型: {type(batch_output)}")
+                if isinstance(batch_output, dict):
+                    print(f"📤 输出键: {list(batch_output.keys())}")
+                    for k, v in batch_output.items():
+                        if hasattr(v, 'shape'):
+                            print(f"   - {k}: shape={v.shape}")
+            
+            except RuntimeError as e:
+                print(f"\n❌ 批量推理失败: {e}")
+                
+                # 尝试不同的输入格式（去掉batch维度）
+                print("🔄 尝试格式2: [B, C, H, W]（去掉外层batch维度）")
+                try:
+                    batch_tensor_2d = batch_tensor.squeeze(0)  # [B, C, H, W]
+                    print(f"   新形状: {batch_tensor_2d.shape}")
+                    
+                    model.clean_kv_cache()
+                    with torch.no_grad(), torch.amp.autocast("cuda", dtype=dtype):
+                        batch_output = model.inference_streaming(
+                            batch_tensor_2d,
+                            num_scale_frames=0,
+                            keyframe_interval=10,
+                        )
+                    print("✅ 格式2成功!")
+                except Exception as e2:
+                    print(f"❌ 格式2也失败: {e2}")
+                    
+                    # 尝试逐帧处理
+                    print("🔄 尝试逐帧处理作为备选方案...")
+                    batch_output = None
+                    del batch_tensor
+                    torch.cuda.empty_cache()
+            
+            # ========== 第三步：处理推理结果（与文件模式一致）==========
+            print("📊 处理推理结果...")
+            
+            all_points = []
+            all_colors = []
+            all_camera_poses = []
+            scene_center = None
+            total_point_count = 0
+            
+            # 如果批量推理失败，回退到逐帧处理
+            if batch_output is None:
+                print("   使用逐帧处理模式")
+                
+                for i in range(len(valid_frame_indices)):
+                    frame_idx = valid_frame_indices[i]
+                    
+                    try:
+                        # 重新加载预处理后的图像张量
+                        img_tensor = preprocess_image_list[i].to(device).unsqueeze(0)
+                        
+                        with torch.no_grad(), torch.amp.autocast("cuda", dtype=dtype):
+                            single_output = model.inference_streaming(img_tensor)
+                        
+                        # 获取单帧结果
+                        # 准备后处理图像
+                        images_for_post = torch.stack([
+                            torch.from_numpy(batch_resized[i]).permute(2, 0, 1)
+                        ]).float() / 255.0
+                        
+                        predictions, images_cpu = postprocess(single_output, images_for_post)
+                        vis_predictions = prepare_for_visualization(predictions, images_cpu)
+                        
+                        # 清理内存
+                        del img_tensor, single_output
+                        torch.cuda.empty_cache()
+                        
+                    except Exception as e:
+                        print(f"❌ 帧 #{frame_idx} 推理失败: {type(e).__name__}: {e}")
+                        continue
+            else:
+                print("   使用批量处理模式")
+                
+                # 一次性准备所有后处理图像（与文件模式一致）
+                images_for_post = torch.stack([
+                    torch.from_numpy(f).permute(2, 0, 1) for f in batch_resized
+                ]).float() / 255.0
+                
+                # 一次性后处理所有结果（与文件模式一致）
+                predictions, images_cpu = postprocess(batch_output, images_for_post)
+                vis_predictions = prepare_for_visualization(predictions, images_cpu)
+                
+                world_points = vis_predictions.get("world_points", vis_predictions.get("depth"))
+                depth_conf = vis_predictions.get("depth_conf")
+                extrinsic = vis_predictions["extrinsic"]
+                intrinsic = vis_predictions["intrinsic"]
+                
+                # 如果是深度图，转换为点云
+                if world_points.ndim == 4 and world_points.shape[-1] == 1:
+                    world_points = unproject_depth_map_to_point_map(
+                        torch.from_numpy(world_points),
+                        torch.from_numpy(extrinsic),
+                        torch.from_numpy(intrinsic)
+                    )
+                
+                colors = images_cpu.permute(0, 2, 3, 1).cpu().numpy()
+                
+                # 遍历所有帧
+                for i in range(len(valid_frame_indices)):
+                    frame_idx = valid_frame_indices[i]
+                    
+                    try:
+                        frame_points = world_points[i].reshape(-1, 3)
+                        valid = np.isfinite(frame_points).all(axis=1)
+                        points_filtered = frame_points[valid]
+                        
+                        # 添加调试信息
+                        if i == 0:
+                            print(f"   帧 #{i}: 原始点数={len(frame_points)}, 有效点数(有限值)={len(points_filtered)}")
+                        
+                        if depth_conf is not None:
+                            conf = depth_conf[i]
+                            conf_flat = conf.reshape(-1)[valid]
+                            
+                            # 添加调试信息
+                            if i == 0:
+                                print(f"   帧 #{i}: 置信度范围=[{conf_flat.min():.3f}, {conf_flat.max():.3f}], 均值={conf_flat.mean():.3f}")
+                            
+                            # 降低置信度阈值（从1.5改为0.1）
+                            mask = conf_flat > 0.1
+                            points_filtered = points_filtered[mask]
+                            
+                            if i == 0:
+                                print(f"   帧 #{i}: 置信度过滤后点数={len(points_filtered)}")
+                        else:
+                            if i == 0:
+                                print(f"   帧 #{i}: 没有置信度数据，跳过置信度过滤")
+                        
+                        # 获取颜色
+                        colors_cropped = colors[i]
+                        colors_all = (colors_cropped.reshape(-1, 3) * 255).astype(np.uint8)
+                        colors_filtered = colors_all[valid]
+                        if depth_conf is not None:
+                            colors_filtered = colors_filtered[mask]
+                        
+                        if scene_center is None and len(points_filtered) > 0:
+                            scene_center = np.mean(points_filtered, axis=0)
+                        
+                        max_points = 5000
+                        if len(points_filtered) > max_points:
+                            indices = np.linspace(0, len(points_filtered) - 1, max_points, dtype=int)
+                            points_filtered = points_filtered[indices]
+                            colors_filtered = colors_filtered[indices]
+                        
+                        all_points.extend(points_filtered.flatten().tolist())
+                        all_colors.extend(colors_filtered.flatten().tolist())
+                        total_point_count += len(points_filtered)
+                        
+                        # 获取相机位姿
+                        if isinstance(extrinsic, torch.Tensor):
+                            ext = extrinsic[i].cpu().numpy()
+                        else:
+                            ext = extrinsic[i]
+                        
+                        cam_to_world_mat = closed_form_inverse_se3(ext)
+                        cam_to_world = cam_to_world_mat[:3, :]
+                        if scene_center is not None:
+                            cam_to_world[..., -1] -= scene_center
+                        
+                        all_camera_poses.append({
+                            'position': [
+                                float(cam_to_world[0, 3]),
+                                float(cam_to_world[1, 3]),
+                                float(cam_to_world[2, 3])
+                            ],
+                            'frame_id': frame_idx
+                        })
+                        
+                        print(f"✅ 帧 #{frame_idx}: {len(points_filtered)} 点")
+                        
+                    except Exception as e:
+                        print(f"❌ 帧 #{frame_idx} 处理失败: {type(e).__name__}: {e}")
+                        continue
+            
+            del batch_output, images_for_post
+            torch.cuda.empty_cache()
+            gc.collect()
+            
+            # ========== 第四步：返回结果 ==========
+            print(f"\n🎉 批量处理完成! 总点数: {total_point_count}")
+            
+            return {
+                "code": 200,
+                "success": True,
+                "points": all_points,
+                "colors": all_colors,
+                "cameraPoses": all_camera_poses,
+                "sceneCenter": scene_center.tolist() if scene_center is not None else [],
+                "frames_processed": len(valid_frame_indices),
+                "total_points": total_point_count,
+                "batch_id": batch_id
+            }
+            
+        except Exception as e:
+            print(f"❌ 批量推理失败: {type(e).__name__}: {e}")
+            return {"code": 500, "success": False, "msg": str(e)}
+    
     import uvicorn
     print(f"🚀 HTTP API 服务启动在 http://localhost:{http_port}")
     print(f"   测试接口: GET /test/info")
     print(f"   上传接口: POST /upload")
-    print(f"   流式接口: WebSocket /ws/stream")
-    uvicorn.run(app, host="0.0.0.0", port=http_port)
+    print(f"   批量接口: POST /batch-inference")
+    print(f"   点云下载: GET /point_cloud/<filename>")
+    uvicorn.run(app, host="0.0.0.0", port=http_port, 
+                ws_ping_interval=None, ws_ping_timeout=None)
 
 def main():
     parser = argparse.ArgumentParser(description="LingBot-MAP Real-time Streaming Demo")
     
-    # Mode selection
-    parser.add_argument("--mode", type=str, default="camera", choices=["camera", "api"], 
-                        help="运行模式: camera(摄像头实时流) 或 api(HTTP接口)")
+    # Mode selection (for compatibility, only API mode is supported)
+    parser.add_argument("--mode", type=str, default="api", choices=["api"], 
+                        help="运行模式: api(HTTP接口)")
     
     # Input
-    parser.add_argument("--camera_id", type=int, default=0, help="Webcam device ID")
     parser.add_argument("--model_path", type=str, required=True, help="Path to model checkpoint")
     
     # Output
-    parser.add_argument("--port", type=int, default=8080, help="Viser server port (camera mode)")
-    parser.add_argument("--http_port", type=int, default=8000, help="HTTP API port (api mode)")
+    parser.add_argument("--http_port", type=int, default=8000, help="HTTP API port")
     
     # Inference
-    parser.add_argument("--fps", type=int, default=3, help="Target processing FPS")
     parser.add_argument("--image_size", type=int, default=518, help="Image size")
     parser.add_argument("--patch_size", type=int, default=14, help="Patch size")
     parser.add_argument("--num_scale_frames", type=int, default=4, help="Number of scale frames")
     parser.add_argument("--keyframe_interval", type=int, default=10, help="Keyframe interval")
     parser.add_argument("--kv_cache_sliding_window", "--window_size", type=int, default=300, help="KV cache sliding window size")
-    
-    # Visualization
-    parser.add_argument("--point_size", type=float, default=0.005, help="Point size")
-    parser.add_argument("--downsample_factor", type=int, default=10, help="Point cloud downsample factor")
-    parser.add_argument("--conf_threshold", type=float, default=1.5, help="Confidence threshold for visualization")
     
     args = parser.parse_args()
     
@@ -1845,13 +995,9 @@ def main():
     
     print(f"Model loaded. Inference dtype: {dtype}")
     
-    # Run in selected mode
-    if args.mode == "camera":
-        print(f"📸 启动摄像头模式，Viser 服务端口: {args.port}")
-        process_camera_stream(model, device, dtype, args)
-    else:
-        print(f"🌐 启动 API 模式，HTTP 服务端口: {args.http_port}")
-        start_http_server(model, device, dtype, args.image_size, args.patch_size, args.http_port)
+    # Run HTTP API mode
+    print(f"🌐 启动 API 模式，HTTP 服务端口: {args.http_port}")
+    start_http_server(model, device, dtype, args.image_size, args.patch_size, args.http_port)
 
 
 if __name__ == "__main__":

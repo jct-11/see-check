@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LingBot-Map 3D Viewer</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #1a1a2e; }
+  #canvas-container { width: 100vw; height: 100vh; }
+  #loading-overlay {
+    position: fixed; inset: 0; z-index: 200;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(26,26,46,0.95); color: #eee; font-size: 16px;
+    flex-direction: column; gap: 12px;
+  }
+  .spinner { width: 40px; height: 40px; border: 3px solid rgba(255,255,255,0.2); border-top-color: #4fc3f7; border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #gui-panel {
+    position: fixed; top: 10px; right: 10px; width: 280px;
+    max-height: calc(100vh - 20px); background: rgba(15,15,30,0.85);
+    backdrop-filter: blur(8px); color: #ccc; border-radius: 10px;
+    padding: 14px; overflow-y: auto; z-index: 100; font-size: 13px;
+    border: 1px solid rgba(255,255,255,0.1);
+    transition: transform 0.3s;
+  }
+  #gui-panel.hidden { transform: translateX(320px); }
+  #gui-toggle {
+    position: fixed; top: 14px; right: 300px; z-index: 101;
+    background: rgba(15,15,30,0.85); color: #ccc; border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 14px;
+    transition: right 0.3s;
+  }
+  #gui-toggle.shifted { right: 14px; }
+  #gui-panel h3 { margin: 0 0 10px 0; color: #4fc3f7; font-size: 15px; }
+  .ctrl { margin-bottom: 10px; }
+  .ctrl label { display: flex; justify-content: space-between; color: #aaa; font-size: 12px; margin-bottom: 2px; }
+  .ctrl label span { color: #4fc3f7; font-weight: bold; }
+  .ctrl input[type="range"] { width: 100%; accent-color: #4fc3f7; }
+  .ctrl select { width: 100%; padding: 4px; background: #222; color: #ccc; border: 1px solid #444; border-radius: 4px; }
+  .ctrl-row { display: flex; gap: 6px; }
+  .ctrl-row button { flex: 1; padding: 6px; background: #333; color: #ccc; border: 1px solid #444; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .ctrl-row button:hover { background: #444; }
+  .ctrl-row button.active { background: #4fc3f7; color: #111; border-color: #4fc3f7; }
+  #info-bar {
+    position: fixed; bottom: 10px; left: 10px; color: #888; font-size: 11px; z-index: 100; pointer-events: none;
+  }
+  #status { color: #4fc3f7; }
+</style>
+</head>
+<body>
+<div id="canvas-container"></div>
+
+<div id="loading-overlay">
+  <div class="spinner"></div>
+  <div id="loading-text">Loading data...</div>
+</div>
+
+<button id="gui-toggle" title="Toggle panel">☰</button>
+
+<div id="gui-panel">
+  <h3>🎯 LingBot-Map 3D Viewer</h3>
+
+  <div class="ctrl">
+    <label>Frame <span id="frame-label">Merged</span></label>
+    <input type="range" id="frame-slider" min="-1" max="0" value="-1" step="1">
+  </div>
+
+  <div class="ctrl">
+    <label>Confidence Threshold <span id="conf-val">0.5</span></label>
+    <input type="range" id="conf-slider" min="0" max="2" value="0.5" step="0.01">
+  </div>
+
+  <div class="ctrl">
+    <label>Downsample <span id="ds-val">2</span></label>
+    <input type="range" id="ds-slider" min="1" max="100" value="2" step="1">
+  </div>
+
+  <div class="ctrl">
+    <label>Point Size <span id="ps-val">0.005</span></label>
+    <input type="range" id="ps-slider" min="0.0005" max="0.02" value="0.002" step="0.0005">
+  </div>
+
+  <div class="ctrl">
+    <label>Frustum Size <span id="fs-val">0.1</span></label>
+    <input type="range" id="fs-slider" min="0.01" max="0.5" value="0.1" step="0.01">
+  </div>
+
+  <div class="ctrl">
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+      <input type="checkbox" id="show-cameras" checked style="accent-color:#4fc3f7;">
+      Show Camera Frustums
+    </label>
+  </div>
+
+  <div class="ctrl">
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+      <input type="checkbox" id="show-frame-image" checked style="accent-color:#4fc3f7;">
+      Show Frame Image
+    </label>
+  </div>
+
+  <div class="ctrl-row" style="margin-bottom:6px;">
+    <button id="btn-reset">Reset View</button>
+    <button id="btn-top">Top</button>
+    <button id="btn-front">Front</button>
+  </div>
+</div>
+
+<div id="info-bar">
+  Points: <span id="status">-</span> | Frames: <span id="frame-count">-</span>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
+
+// ── Resolve base path ──────────────────────────────────────────────────
+const scriptPath = import.meta.url;
+const base = new URL('.', new URL(scriptPath, window.location.href)).href;
+
+// ── Global state ───────────────────────────────────────────────────────
+let scene, camera, renderer, controls;
+let cloudGroup, frustumGroup, imageGroup;
+let metadata = null;
+let camerasData = null;
+let mergedCloud = null;          // THREE.Points for merged cloud
+let confidenceData = null;       // Float32Array for merged confidence
+let frameClouds = {};            // { frameIdx: THREE.Points }
+let frameTextures = {};          // { frameIdx: THREE.Texture }
+let currentFrame = -1;           // -1 = merged
+let currentImagePlane = null;
+
+// ── UI references ──────────────────────────────────────────────────────
+const loadingOverlay = document.getElementById('loading-overlay');
+const loadingText = document.getElementById('loading-text');
+const guiPanel = document.getElementById('gui-panel');
+const guiToggle = document.getElementById('gui-toggle');
+
+// ── Init Three.js ──────────────────────────────────────────────────────
+function initScene() {
+  const container = document.getElementById('canvas-container');
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x1a1a2e);
+  scene.fog = new THREE.Fog(0x1a1a2e, 5, 80);
+
+  camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 0.01, 200);
+  camera.position.set(3, 2, 5);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(container.clientWidth, container.clientHeight);
+  container.appendChild(renderer.domElement);
+
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.screenSpacePanning = true;
+
+  // Grid
+  const grid = new THREE.GridHelper(20, 20, 0x333355, 0x222244);
+  scene.add(grid);
+
+  // Axes
+  const axesLen = 1;
+  const xAxis = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(axesLen,0,0)]),
+    new THREE.LineBasicMaterial({ color: 0xff4444 })
+  );
+  const yAxis = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,axesLen,0)]),
+    new THREE.LineBasicMaterial({ color: 0x44ff44 })
+  );
+  const zAxis = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,axesLen)]),
+    new THREE.LineBasicMaterial({ color: 0x4444ff })
+  );
+  scene.add(xAxis, yAxis, zAxis);
+
+  cloudGroup = new THREE.Group();
+  frustumGroup = new THREE.Group();
+  imageGroup = new THREE.Group();
+  scene.add(cloudGroup);
+  scene.add(frustumGroup);
+  scene.add(imageGroup);
+
+  window.addEventListener('resize', () => {
+    camera.aspect = container.clientWidth / container.clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(container.clientWidth, container.clientHeight);
+  });
+}
+
+// ── Data loading ───────────────────────────────────────────────────────
+async function loadJSON(name) {
+  const r = await fetch(base + name);
+  if (!r.ok) throw new Error(`${name}: HTTP ${r.status}`);
+  return r.json();
+}
+
+async function loadBinary(name) {
+  const r = await fetch(base + name);
+  if (!r.ok) throw new Error(`${name}: HTTP ${r.status}`);
+  const buf = await r.arrayBuffer();
+  return new Float32Array(buf);
+}
+
+async function loadPLY(name) {
+  return new Promise((resolve, reject) => {
+    new PLYLoader().load(base + name, resolve, undefined, reject);
+  });
+}
+
+async function loadTexture(frameIdx) {
+  if (frameTextures[frameIdx]) return frameTextures[frameIdx];
+  const name = `frame_${String(frameIdx).padStart(6, '0')}.jpg`;
+  return new Promise((resolve) => {
+    new THREE.TextureLoader().load(base + name, (tex) => {
+      tex.colorSpace = THREE.SRGBColorSpace;
+      frameTextures[frameIdx] = tex;
+      resolve(tex);
+    }, undefined, () => resolve(null));
+  });
+}
+
+// ── Viridis colormap for frustum colors ────────────────────────────────
+function viridisColor(t) {
+  // Simplified viridis palette
+  const v = [
+    [0.267, 0.004, 0.329], [0.282, 0.141, 0.458], [0.253, 0.265, 0.530],
+    [0.206, 0.372, 0.553], [0.163, 0.471, 0.558], [0.128, 0.567, 0.551],
+    [0.134, 0.659, 0.517], [0.211, 0.737, 0.448], [0.350, 0.798, 0.346],
+    [0.529, 0.836, 0.221], [0.738, 0.847, 0.120], [0.953, 0.827, 0.069],
+    [0.993, 0.748, 0.143]
+  ];
+  const i = Math.min(v.length - 1, Math.floor(t * v.length));
+  const c = v[i];
+  return new THREE.Color(c[0], c[1], c[2]);
+}
+
+// ── Build camera frustums ──────────────────────────────────────────────
+function buildFrustums() {
+  frustumGroup.clear();
+  if (!camerasData) return;
+
+  const frustumScale = parseFloat(document.getElementById('fs-slider').value);
+  const S = camerasData.length;
+
+  for (let i = 0; i < S; i++) {
+    const cam = camerasData[i];
+    const R = new THREE.Matrix3().fromArray(cam.R_w2c.flat());
+    const t = new THREE.Vector3(cam.t_w2c[0], cam.t_w2c[1], cam.t_w2c[2]);
+    const fx = cam.focal[0], fy = cam.focal[1];
+    const cx = cam.pp[0], cy = cam.pp[1];
+    const W = cam.image_w, H = cam.image_h;
+    const s = Math.max(frustumScale * (metadata?.scene_scale || 1), 0.5);
+
+    // Four corners in camera space (camera looks +Z)
+    const cornersCam = [
+      new THREE.Vector3((-cx) * s / fx, (-cy) * s / fy, s),
+      new THREE.Vector3((W - cx) * s / fx, (-cy) * s / fy, s),
+      new THREE.Vector3((W - cx) * s / fx, (H - cy) * s / fy, s),
+      new THREE.Vector3((-cx) * s / fx, (H - cy) * s / fy, s),
+    ];
+
+    // Transform to world
+    const cornersWorld = cornersCam.map(c => c.applyMatrix3(R).add(t));
+
+    // 8 edges: 4 from camera center to corners, 4 between corners
+    const edges = [
+      [t, cornersWorld[0]], [t, cornersWorld[1]], [t, cornersWorld[2]], [t, cornersWorld[3]],
+      [cornersWorld[0], cornersWorld[1]], [cornersWorld[1], cornersWorld[2]],
+      [cornersWorld[2], cornersWorld[3]], [cornersWorld[3], cornersWorld[0]],
+    ];
+
+    const color = viridisColor(i / Math.max(1, S - 1));
+    const material = new THREE.LineBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.7,
+      linewidth: 1,
+    });
+
+    const points = [];
+    edges.forEach(([a, b]) => { points.push(a, b); });
+    const geom = new THREE.BufferGeometry().setFromPoints(points);
+    const lines = new THREE.LineSegments(geom, material);
+    lines.userData = { frameIdx: i, cameraPos: t.clone() };
+    frustumGroup.add(lines);
+  }
+}
+
+function updateFrustums() {
+  buildFrustums();
+  frustumGroup.visible = document.getElementById('show-cameras').checked;
+}
+
+// ── Point cloud management ─────────────────────────────────────────────
+function applyFilterToGeometry(geometry, keepMask) {
+  const oldPos = geometry.attributes.position;
+  const oldCol = geometry.attributes.color;
+  const newCount = keepMask.reduce((a, b) => a + b, 0);
+
+  const newPos = new Float32Array(newCount * 3);
+  const newCol = oldCol ? new Float32Array(newCount * 3) : null;
+
+  let j = 0;
+  for (let i = 0; i < keepMask.length; i++) {
+    if (keepMask[i]) {
+      newPos[j * 3] = oldPos.getX(i);
+      newPos[j * 3 + 1] = oldPos.getY(i);
+      newPos[j * 3 + 2] = oldPos.getZ(i);
+      if (newCol) {
+        newCol[j * 3] = oldCol.getX(i);
+        newCol[j * 3 + 1] = oldCol.getY(i);
+        newCol[j * 3 + 2] = oldCol.getZ(i);
+      }
+      j++;
+    }
+  }
+
+  geometry.setAttribute('position', new THREE.BufferAttribute(newPos, 3));
+  if (newCol) geometry.setAttribute('color', new THREE.BufferAttribute(newCol, 3));
+  geometry.setDrawRange(0, newCount);
+}
+
+function updatePointCloud() {
+  const confThreshold = parseFloat(document.getElementById('conf-slider').value);
+  const downsample = parseInt(document.getElementById('ds-slider').value);
+  const pointSize = parseFloat(document.getElementById('ps-slider').value);
+
+  cloudGroup.clear();
+  frameClouds = {};
+
+  if (currentFrame === -1) {
+    // Merged cloud
+    if (!mergedCloud) return;
+    const geom = mergedCloud.geometry.clone();
+    const posCount = geom.attributes.position.count;
+
+    // Confidence filter
+    if (confidenceData && confidenceData.length === posCount) {
+      const mask = [];
+      for (let i = 0; i < posCount; i++) mask.push(confidenceData[i] >= confThreshold);
+      applyFilterToGeometry(geom, mask);
+    }
+
+    // Downsample
+    const stride = Math.max(2, downsample);
+    const filteredPos = geom.attributes.position;
+    const filteredCol = geom.attributes.color;
+    const filteredCount = filteredPos.count;
+    const dsCount = Math.ceil(filteredCount / stride);
+    const dsPos = new Float32Array(dsCount * 3);
+    const dsCol = filteredCol ? new Float32Array(dsCount * 3) : null;
+    for (let i = 0; i < dsCount; i++) {
+      const si = i * stride;
+      dsPos[i * 3] = filteredPos.getX(si);
+      dsPos[i * 3 + 1] = filteredPos.getY(si);
+      dsPos[i * 3 + 2] = filteredPos.getZ(si);
+      if (dsCol) {
+        dsCol[i * 3] = filteredCol.getX(si);
+        dsCol[i * 3 + 1] = filteredCol.getY(si);
+        dsCol[i * 3 + 2] = filteredCol.getZ(si);
+      }
+    }
+
+    const mat = new THREE.PointsMaterial({
+      size: pointSize,
+      vertexColors: !!dsCol,
+      sizeAttenuation: true,
+    });
+    const points = new THREE.Points(new THREE.BufferGeometry(), mat);
+    points.geometry.setAttribute('position', new THREE.BufferAttribute(dsPos, 3));
+    if (dsCol) points.geometry.setAttribute('color', new THREE.BufferAttribute(dsCol, 3));
+
+    cloudGroup.add(points);
+    document.getElementById('status').textContent = `${dsCount.toLocaleString()} (merged)`;
+  } else {
+    // Single frame cloud
+    loadSingleFrameCloud(currentFrame, confThreshold, downsample, pointSize);
+  }
+}
+
+async function loadSingleFrameCloud(idx, confThreshold, downsample, pointSize) {
+  const name = `frame_${String(idx).padStart(6, '0')}.ply`;
+  try {
+    const geom = await loadPLY(name);
+    if (!geom) return;
+    const mat = new THREE.PointsMaterial({
+      size: pointSize,
+      vertexColors: true,
+      sizeAttenuation: true,
+    });
+    const points = new THREE.Points(geom, mat);
+    frameClouds[idx] = points;
+    cloudGroup.add(points);
+    document.getElementById('status').textContent = `${geom.attributes.position.count.toLocaleString()} (frame ${idx})`;
+  } catch (e) {
+    console.warn(`Failed to load frame ${idx} PLY:`, e);
+    document.getElementById('status').textContent = `Failed to load frame ${idx}`;
+  }
+}
+
+// ── Frame image plane ──────────────────────────────────────────────────
+async function updateFrameImage() {
+  if (currentImagePlane) {
+    imageGroup.remove(currentImagePlane);
+    if (currentImagePlane.material?.map) currentImagePlane.material.map.dispose();
+    currentImagePlane = null;
+  }
+
+  const show = document.getElementById('show-frame-image').checked;
+  if (!show || camerasData === null) return;
+
+  const idx = currentFrame >= 0 ? currentFrame : 0;
+  if (idx >= camerasData.length) return;
+
+  const tex = await loadTexture(idx);
+  if (!tex) return;
+
+  const cam = camerasData[idx];
+  const R = new THREE.Matrix3().fromArray(cam.R_w2c.flat());
+  const t = new THREE.Vector3(cam.t_w2c[0], cam.t_w2c[1], cam.t_w2c[2]);
+  const fx = cam.focal[0], fy = cam.focal[1];
+  const W = cam.image_w, H = cam.image_h;
+  const frustumScale = parseFloat(document.getElementById('fs-slider').value);
+  const s = Math.max(frustumScale * (metadata?.scene_scale || 1), 0.5);
+
+  const planeW = W * s / fx;
+  const planeH = H * s / fy;
+
+  const geom = new THREE.PlaneGeometry(planeW, planeH);
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.85,
+    depthWrite: false,
+  });
+  const plane = new THREE.Mesh(geom, mat);
+
+  // Position at frustum far plane center
+  const centerCam = new THREE.Vector3(
+    (W / 2 - cam.pp[0]) * s / fx,
+    (H / 2 - cam.pp[1]) * s / fy,
+    s
+  );
+  plane.position.copy(centerCam.applyMatrix3(R).add(t));
+
+  // Apply camera rotation
+  const q = new THREE.Quaternion().setFromRotationMatrix(
+    new THREE.Matrix4().makeBasis(
+      new THREE.Vector3(R.elements[0], R.elements[1], R.elements[2]),
+      new THREE.Vector3(R.elements[3], R.elements[4], R.elements[5]),
+      new THREE.Vector3(R.elements[6], R.elements[7], R.elements[8])
+    )
+  );
+  plane.setRotationFromQuaternion(q);
+
+  currentImagePlane = plane;
+  imageGroup.add(plane);
+}
+
+// ── GUI setup ──────────────────────────────────────────────────────────
+function setupGUI() {
+  const frameSlider = document.getElementById('frame-slider');
+  const confSlider = document.getElementById('conf-slider');
+  const dsSlider = document.getElementById('ds-slider');
+  const psSlider = document.getElementById('ps-slider');
+  const fsSlider = document.getElementById('fs-slider');
+
+  frameSlider.addEventListener('input', () => {
+    currentFrame = parseInt(frameSlider.value);
+    document.getElementById('frame-label').textContent = currentFrame === -1 ? 'Merged' : `Frame ${currentFrame}`;
+    updatePointCloud();
+    updateFrameImage();
+  });
+
+  confSlider.addEventListener('input', () => {
+    document.getElementById('conf-val').textContent = confSlider.value;
+    updatePointCloud();
+  });
+
+  dsSlider.addEventListener('input', () => {
+    document.getElementById('ds-val').textContent = dsSlider.value;
+    updatePointCloud();
+  });
+
+  psSlider.addEventListener('input', () => {
+    document.getElementById('ps-val').textContent = psSlider.value;
+    // Update material of all point clouds
+    cloudGroup.traverse((child) => {
+      if (child.isPoints && child.material) child.material.size = parseFloat(psSlider.value);
+    });
+  });
+
+  fsSlider.addEventListener('input', () => {
+    document.getElementById('fs-val').textContent = fsSlider.value;
+    updateFrustums();
+    updateFrameImage();
+  });
+
+  document.getElementById('show-cameras').addEventListener('change', (e) => {
+    frustumGroup.visible = e.target.checked;
+  });
+
+  document.getElementById('show-frame-image').addEventListener('change', () => {
+    updateFrameImage();
+  });
+
+  // Buttons
+  document.getElementById('btn-reset').addEventListener('click', () => {
+    if (metadata?.scene_center) {
+      const c = metadata.scene_center;
+      controls.target.set(c[0], c[1], c[2]);
+    }
+    const sc = metadata?.scene_scale || 2;
+    camera.position.set(sc * 2, sc * 1.5, sc * 2).add(controls.target);
+    controls.update();
+  });
+
+  document.getElementById('btn-top').addEventListener('click', () => {
+    const sc = metadata?.scene_scale || 2;
+    camera.position.copy(controls.target).add(new THREE.Vector3(0, sc * 2, 0.01));
+    controls.update();
+  });
+
+  document.getElementById('btn-front').addEventListener('click', () => {
+    const sc = metadata?.scene_scale || 2;
+    camera.position.copy(controls.target).add(new THREE.Vector3(0, 0, sc * 2));
+    controls.update();
+  });
+
+  // Panel toggle
+  guiToggle.addEventListener('click', () => {
+    const hidden = guiPanel.classList.toggle('hidden');
+    guiToggle.classList.toggle('shifted', hidden);
+    guiToggle.textContent = hidden ? '☰' : '✕';
+  });
+}
+
+// ── Main init ──────────────────────────────────────────────────────────
+async function main() {
+  initScene();
+
+  try {
+    // 1. Load metadata
+    loadingText.textContent = 'Loading metadata...';
+    metadata = await loadJSON('metadata.json');
+    document.getElementById('frame-count').textContent = metadata.num_frames;
+
+    // Init sliders from metadata
+    const frameSlider = document.getElementById('frame-slider');
+    frameSlider.max = metadata.num_frames - 1;
+    frameSlider.value = -1;
+
+    const confSlider = document.getElementById('conf-slider');
+    confSlider.value = metadata.default_conf_threshold || 0.5;
+    document.getElementById('conf-val').textContent = confSlider.value;
+
+    const dsSlider = document.getElementById('ds-slider');
+    dsSlider.value = metadata.default_downsample || 10;
+    document.getElementById('ds-val').textContent = dsSlider.value;
+
+    // 2. Load cameras
+    loadingText.textContent = 'Loading cameras...';
+    camerasData = await loadJSON('cameras.json');
+
+    // 3. Load merged point cloud
+    loadingText.textContent = 'Loading merged point cloud...';
+    try {
+      const plyGeom = await loadPLY('merged_pointcloud.ply');
+      if (plyGeom) {
+        const mat = new THREE.PointsMaterial({
+          size: parseFloat(document.getElementById('ps-slider').value),
+          vertexColors: true,
+          sizeAttenuation: true,
+        });
+        mergedCloud = new THREE.Points(plyGeom, mat);
+        cloudGroup.add(mergedCloud.clone());
+      }
+    } catch (e) {
+      console.warn('No merged_pointcloud.ply found:', e.message);
+    }
+
+    // 4. Load confidence data
+    if (metadata.has_confidence) {
+      loadingText.textContent = 'Loading confidence data...';
+      try {
+        confidenceData = await loadBinary('merged_confidence.bin');
+      } catch (e) {
+        console.warn('No merged_confidence.bin found:', e.message);
+      }
+    }
+
+    // 5. Build frustums
+    loadingText.textContent = 'Building camera frustums...';
+    buildFrustums();
+
+    // 6. Setup controls
+    setupGUI();
+
+    // Initial update
+    updatePointCloud();
+
+    // Orient camera to scene
+    if (metadata.scene_center) {
+      const c = metadata.scene_center;
+      controls.target.set(c[0], c[1], c[2]);
+      const sc = metadata.scene_scale || 2;
+      camera.position.set(c[0] + sc * 2, c[1] + sc * 1.5, c[2] + sc * 2);
+      controls.update();
+    }
+
+    document.getElementById('status').textContent = 'Ready';
+
+  } catch (e) {
+    console.error(e);
+    loadingText.textContent = `Error: ${e.message}`;
+    return;
+  }
+
+  loadingOverlay.style.display = 'none';
+
+  // Animation loop
+  function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+main().catch((e) => {
+  console.error(e);
+  loadingText.textContent = `Fatal error: ${e.message}`;
+});
+</script>
+</body>
+</html>

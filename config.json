@@ -9,7 +9,7 @@
       "name": "RTX 3090",
       "protocol": "http",
       "host": "192.168.0.200",
-      "port": 11434,
+      "port": 8000,
       "basePath": "",
       "apiStyle": "ollama",
       "model": ""
@@ -36,7 +36,7 @@
     }
   ],
   "selectedInferenceServerId": "3090",
-  "ollamaBase": "http://192.168.0.200:11434",
+  "ollamaBase": "http://192.168.0.200:8000",
   "embedBase": "http://192.168.0.200:11434",
   "capture": {
     "source": "ffmpeg",
