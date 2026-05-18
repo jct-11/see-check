@@ -2,6 +2,78 @@
 // 整合: spatial_api.js, spatial_ui.js, spatial_visualizer.js, spatial_map.js
 
 // ============== 工具函数 ==============
+/** 安全的 URL 拼接（修复 //batch 问题） */
+function buildUrl(path) {
+  const base = BATCH_SERVER_URL || '';
+  if (!path) return base;
+  if (path.startsWith('/')) return base + path;
+  return base + '/' + path;
+}
+
+/** 安全的 fetch 包装 */
+async function safeFetch(url, options) {
+  const fullUrl = buildUrl(url);
+  const response = await fetch(fullUrl, options);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+  }
+  return response;
+}
+
+/** Three.js 资源释放工具 */
+function disposeObject(obj) {
+  if (!obj) return;
+  if (obj.geometry) {
+    obj.geometry.dispose();
+    for (let attr in obj.geometry.attributes) {
+      if (obj.geometry.attributes[attr]) {
+        obj.geometry.attributes[attr].dispose();
+      }
+    }
+  }
+  if (obj.material) {
+    if (Array.isArray(obj.material)) {
+      obj.material.forEach(m => m.dispose());
+    } else {
+      obj.material.dispose();
+    }
+  }
+}
+
+/** 相机位姿平滑（指数移动平均 + 步长限制） */
+function smoothCameraPose(rawPose) {
+  if (!SpatialState.smoothPose) {
+    SpatialState.smoothPose = {
+      t: [...rawPose.t_c2w],
+      R: rawPose.R_c2w.map(row => [...row])
+    };
+    return SpatialState.smoothPose;
+  }
+
+  const alpha = SpatialState.smoothAlpha;
+  const maxStep = SpatialState.maxPoseStep;
+
+  // 平滑平移
+  for (let i = 0; i < 3; i++) {
+    let diff = rawPose.t_c2w[i] - SpatialState.smoothPose.t[i];
+    if (Math.abs(diff) > maxStep) {
+      diff = diff > 0 ? maxStep : -maxStep;
+    }
+    SpatialState.smoothPose.t[i] += alpha * diff;
+  }
+
+  // 平滑旋转（简单 EMA）
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) {
+      const rawR = rawPose.R_c2w[i][j];
+      const currentR = SpatialState.smoothPose.R[i][j];
+      SpatialState.smoothPose.R[i][j] = currentR + alpha * (rawR - currentR);
+    }
+  }
+
+  return SpatialState.smoothPose;
+}
+
 /**
  * 将 Base64 编码字符串转换为 Float32Array
  * @param {string} base64Str - Base64 编码的字符串
@@ -66,6 +138,10 @@ const SpatialState = {
   smoothAlpha: 0.2,
   maxPoseStep: 0.1,
 };
+
+// ============== Legacy standalone variables (referenced by code not yet migrated to SpatialState) ==============
+/** @deprecated — migrate to SpatialState.isInferenceStarted */
+var isInferenceStarted = false;
 
 // ============== 全局常量 ==============
 /** 批次重叠帧数：批次处理完成后帧计数器的回退值 */
@@ -756,9 +832,6 @@ async function init3DScene() {
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0xd0d0d0);
 
-  // 延迟确保DOM完全渲染后再获取尺寸
-  await new Promise(resolve => setTimeout(resolve, 100));
-
   const width = container.clientWidth || 800;
   const height = container.clientHeight || 600;
   
@@ -804,11 +877,10 @@ async function init3DScene() {
   window.pointCloud = pointCloud;
 
   // 创建点云组和相机视锥体组
-  // NOTE: No coordinate flip — points and cameras are used in their original
-  // model world coordinates (same as viser LivePointCloudViewer).
   cloudGroup = new THREE.Group();
   frustumGroup = new THREE.Group();
-  // pointCloud kept as reference; mergedPointCloud handles all rendering
+  cloudGroup.scale.set(-1, -1, 1);
+  frustumGroup.scale.set(-1, -1, 1);
   scene.add(cloudGroup);
   scene.add(frustumGroup);
 
@@ -820,39 +892,50 @@ async function init3DScene() {
   window.controls.maxDistance = 5000;
   window.controls.target.set(0, 0, 0);
 
+  // ResizeObserver - 更可靠的尺寸监听
+  if (SpatialState.resizeObserver) {
+    SpatialState.resizeObserver.disconnect();
+  }
+  SpatialState.resizeObserver = new ResizeObserver(entries => {
+    for (let entry of entries) {
+      const newWidth = entry.contentRect.width;
+      const newHeight = entry.contentRect.height;
+      if (camera3d && renderer) {
+        camera3d.aspect = newWidth / newHeight;
+        camera3d.updateProjectionMatrix();
+        renderer.setSize(newWidth, newHeight);
+      }
+    }
+  });
+  SpatialState.resizeObserver.observe(container);
+
   // 启动动画循环
   animate();
-  window.addEventListener('resize', onWindowResize);
-
-  // 延迟触发一次resize确保尺寸正确
-  setTimeout(() => {
-    onWindowResize();
-  }, 100);
-
+  
+  // 清理旧的监听器
+  window.removeEventListener('resize', onWindowResize);
+  
   console.log('[Spatial Visualizer] 3D scene initialized with size:', width, 'x', height);
 }
 
 /**
- * 窗口大小变化处理
- * 更新相机宽高比和渲染器尺寸
+ * 窗口大小变化处理（旧版保留用于兼容）
  */
 function onWindowResize() {
   const container = document.getElementById('spatialCanvasContainer');
-  const canvas = document.getElementById('spatialCanvas');
-  if (!container || !canvas || !camera3d || !renderer) return;
-
+  if (!container) return;
+  
   const width = container.clientWidth || 800;
   const height = container.clientHeight || 600;
   
-  // 直接设置canvas尺寸
-  canvas.width = width;
-  canvas.height = height;
+  if (camera3d) {
+    camera3d.aspect = width / height;
+    camera3d.updateProjectionMatrix();
+  }
   
-  camera3d.aspect = width / height;
-  camera3d.updateProjectionMatrix();
-  renderer.setSize(width, height);
-  
-  console.log('[Spatial Visualizer] Canvas resized to:', width, 'x', height);
+  if (renderer) {
+    renderer.setSize(width, height);
+  }
 }
 
 function checkAndFixCanvasSize() {
@@ -2211,21 +2294,14 @@ async function fetchAllExtraData(batchId, totalFrames) {
   addLog('额外数据获取完成', 'ok');
 }
 
-// 从 cameras.json 构建视锥体（Viser 风格：完整相机坐标系）
+// 从 cameras.json 构建视锥体（Viser 风格：完整相机坐标系 + 位姿平滑）
 function buildFrustumsFromCamerasData(camData) {
   if (!THREE || !scene) return;
   
-  // 清除旧的视锥体
+  // 清除旧的视锥体（安全释放资源）
   cameraFrustums.forEach(obj => {
     frustumGroup.remove(obj);
-    if (obj.geometry) obj.geometry.dispose();
-    if (obj.material) {
-      if (Array.isArray(obj.material)) {
-        obj.material.forEach(m => m.dispose());
-      } else {
-        obj.material.dispose();
-      }
-    }
+    disposeObject(obj);
   });
   cameraFrustums = [];
   
@@ -2235,6 +2311,9 @@ function buildFrustumsFromCamerasData(camData) {
   // 计算采样步长（最多显示 60 个相机坐标系）
   const step = Math.max(1, Math.floor(S / 60));
   
+  // 重置位姿平滑
+  SpatialState.smoothPose = null;
+  
   for (let i = 0; i < S; i++) {
     if (i % step !== 0 && i !== S - 1) continue;
     
@@ -2243,13 +2322,16 @@ function buildFrustumsFromCamerasData(camData) {
     const R = cam.R_c2w || cam.R_w2c;
     if (!t || !R) continue;
     
+    // 位姿平滑
+    const smoothPose = smoothCameraPose(cam);
+    
     // Camera world position — use C2W directly (same as viser)
-    const camPos = new THREE.Vector3(t[0], t[1], t[2]);
+    const camPos = new THREE.Vector3(-smoothPose.t[0], -smoothPose.t[1], smoothPose.t[2]);
     
     // Extract camera coordinate axes from rotation matrix (same as viser)
-    const xAxis = new THREE.Vector3(R[0][0], R[1][0], R[2][0]);
-    const yAxis = new THREE.Vector3(R[0][1], R[1][1], R[2][1]);
-    const zAxis = new THREE.Vector3(R[0][2], R[1][2], R[2][2]);
+    const xAxis = new THREE.Vector3(-smoothPose.R[0][0], -smoothPose.R[1][0], smoothPose.R[2][0]);
+    const yAxis = new THREE.Vector3(-smoothPose.R[0][1], -smoothPose.R[1][1], smoothPose.R[2][1]);
+    const zAxis = new THREE.Vector3(-smoothPose.R[0][2], -smoothPose.R[1][2], smoothPose.R[2][2]);
     
     const axisLen = 0.1;
     const axisRadius = 0.004;
@@ -2298,10 +2380,14 @@ function buildFrustumsFromCamerasData(camData) {
   // 绘制相机轨迹线（连接所有相机位置）
   if (S > 1) {
     const trajectoryPoints = [];
+    SpatialState.smoothPose = null;
     for (let i = 0; i < S; i++) {
       const cam = camData[i];
       const t = cam.t_c2w || cam.t_w2c;
-      if (t) trajectoryPoints.push(new THREE.Vector3(t[0], t[1], t[2]));
+      if (t) {
+        const smoothPose = smoothCameraPose(cam);
+        trajectoryPoints.push(new THREE.Vector3(-smoothPose.t[0], -smoothPose.t[1], smoothPose.t[2]));
+      }
     }
     if (trajectoryPoints.length > 1) {
       const curve = new THREE.CatmullRomCurve3(trajectoryPoints);
