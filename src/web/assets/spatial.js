@@ -753,7 +753,7 @@ let trajectoryLine = null;
 let frustumMeshes = [];
 
 // Parameters (matching viser defaults)
-let guiDownsample = 5;
+let guiDownsample = 10;
 let guiPointSize = 0.00001;
 let guiConfThreshold = 0.7;
 
