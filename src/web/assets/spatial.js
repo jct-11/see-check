@@ -805,11 +805,11 @@ let frameTime = 0;
 // 帧计数器
 let frameCount = 0;
 // GUI：降采样步长
-let guiDownsample = 10;  // matches live_camera.py --downsample_factor default (10)
+let guiDownsample = 5;   // balance between density and noise
 /** GUI: point cloud point size (matches viser default) */
 let guiPointSize = 0.00001;
 /** GUI: confidence threshold for point filtering (same as viser default) */
-let guiConfThreshold = 1.5;  // matches stream.py --conf_threshold default (1.5), cleaner than 0.7
+let guiConfThreshold = 0.7;  // matches live_camera.py default
 // 统计信息更新回调
 let onStatsUpdate = null;
 
