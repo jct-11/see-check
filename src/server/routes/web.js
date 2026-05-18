@@ -9,6 +9,9 @@ const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.css':  'text/css; charset=utf-8',
   '.js':   'application/javascript; charset=utf-8',
+  '.svg':  'image/svg+xml',
+  '.png':  'image/png',
+  '.ico':  'image/x-icon',
 };
 
 function serveFile(res, filePath, cacheControl) {
@@ -33,10 +36,18 @@ function registerWebRoutes(router) {
     serveFile(res, path.join(WEB_DIR, 'index.html'), 'no-store');
   });
 
+  router.get('/favicon.svg', (req, res) => {
+    serveFile(res, path.join(WEB_DIR, 'favicon.svg'), 'public, max-age=3600');
+  });
+
+  router.get('/favicon.ico', (req, res) => {
+    serveFile(res, path.join(WEB_DIR, 'favicon.ico'), 'public, max-age=3600');
+  });
+
   router.get(
-    (p) => p.startsWith('/web/assets/'),
+    (p) => p.startsWith('/web/assets/') || p.startsWith('/assets/'),
     (req, res, ctx) => {
-      const rel = ctx.url.pathname.replace(/^\/web\/assets\//, '');
+      const rel = ctx.url.pathname.replace(/^\/(?:web\/)?assets\//, '');
       const filePath = path.join(WEB_DIR, 'assets', rel);
       serveFile(res, filePath, 'public, max-age=60');
     }

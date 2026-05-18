@@ -8,17 +8,6 @@ const { CAPTURE_DIR } = require('../../utils/paths');
 const { flowLog, flowWarn, flowError } = require('../../utils/log');
 
 function registerCaptureRoutes(router, ctx) {
-  router.get('/api/latest-frame', (req, res) => {
-    const latest = path.join(CAPTURE_DIR, 'latest.jpg');
-    if (fs.existsSync(latest)) {
-      res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-cache' });
-      fs.createReadStream(latest).pipe(res);
-      return;
-    }
-    res.writeHead(200, { 'Content-Type': 'image/png' });
-    res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64'));
-  });
-
   router.post('/api/capture', (req, res) => {
     flowLog('捕获', '收到摄像头帧 (上传)');
     const form = formidable({ uploadDir: CAPTURE_DIR, keepExtensions: true });
@@ -102,6 +91,20 @@ function registerCaptureRoutes(router, ctx) {
     try {
       await ctx.captureController.stop();
       sendJson(res, 200, { success: true });
+    } catch (err) {
+      sendError(res, 500, err);
+    }
+  });
+
+  // 添加状态查询端点
+  router.get('/api/status', async (req, res) => {
+    try {
+      sendJson(res, 200, {
+        success: true,
+        isCapturing: ctx.captureController ? ctx.captureController.isCapturing() : false,
+        sourceName: ctx.captureController ? ctx.captureController.sourceName() : null,
+        timestamp: Date.now(),
+      });
     } catch (err) {
       sendError(res, 500, err);
     }

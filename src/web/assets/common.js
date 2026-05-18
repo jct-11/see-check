@@ -8,8 +8,10 @@ function switchTab(name) {
       var map = { time: 0, space: 1, fusion: 2, api: 3, about: 4 };
       if (tabs[map[name]]) tabs[map[name]].classList.add('active');
       if (name === 'time') {
-        setTimeout(syncHeights, 0);
-        setTimeout(syncHeights, 120);
+        if (typeof syncHeights === 'function') {
+          setTimeout(syncHeights, 0);
+          setTimeout(syncHeights, 120);
+        }
       }
       if (name === 'space') { setTimeout(function() { if (typeof initPLYViewer === 'function') initPLYViewer(); if (typeof initSceneGraph === 'function') initSceneGraph(); if (typeof onSpatialTabShow === 'function') onSpatialTabShow(); }, 100); }
     }

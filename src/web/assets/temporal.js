@@ -1,10 +1,9 @@
 // temporal.js - time memory tab
 let allFrames = [], isCapturing = false, captureTimer = null, frameCounter = 0, videoStream = null;
-    let cameraMode = 'server';
+    let cameraMode = 'local';
     let serverPollTimer = null;
     let configSynced = false;
     let inferenceServerOptions = [];
-    let localCaptureRequested = false;
 
     // 本地摄像头 pixelDiff 状态（与服务端 pixelDiff.js 逻辑对称）
     const LOCAL_THUMB_W = 128, LOCAL_THUMB_H = 72;
@@ -54,7 +53,6 @@ let allFrames = [], isCapturing = false, captureTimer = null, frameCounter = 0, 
       img.src = '/api/latest-frame?t=' + Date.now();
       if (serverPollTimer) clearInterval(serverPollTimer);
       serverPollTimer = setInterval(() => { img.src = '/api/latest-frame?t=' + Date.now(); }, 2000);
-      updateToggleUI();
     }
 
     function switchToLocal() {
@@ -69,7 +67,6 @@ let allFrames = [], isCapturing = false, captureTimer = null, frameCounter = 0, 
         placeholder.style.display = 'flex';
         placeholder.innerHTML = '<span>本地摄像头不可用<br><span class="hint">当前浏览器不支持，请使用 HTTPS 访问</span></span>';
         setCameraStatus('<span class="dot err"></span>本地摄像头不可用');
-        updateToggleUI();
         return;
       }
       placeholder.style.display = 'flex';
@@ -81,7 +78,6 @@ let allFrames = [], isCapturing = false, captureTimer = null, frameCounter = 0, 
         video.style.cssText = 'width:100%;height:100%;object-fit:cover;';
         placeholder.style.display = 'none';
         setCameraStatus('<span class="dot ok"></span>本地摄像头');
-        updateToggleUI();
         stream.getVideoTracks().forEach(track => {
           track.onended = () => {
             videoStream = null;
@@ -95,28 +91,10 @@ let allFrames = [], isCapturing = false, captureTimer = null, frameCounter = 0, 
         placeholder.style.display = 'flex';
         placeholder.innerHTML = '<span>本地摄像头无法访问<br><span class="hint">请检查本机是否接入摄像头，或在浏览器中授权摄像头权限<br>' + e.message + '</span></span>';
         setCameraStatus('<span class="dot err"></span>本地摄像头异常');
-        updateToggleUI();
       });
     }
 
-    function updateToggleUI() {
-      const dot = document.getElementById('cameraDot');
-      const label = document.getElementById('cameraLabel');
-      if (cameraMode === 'server') {
-        dot.className = 'camera-dot server';
-        label.textContent = '服务器摄像头';
-      } else {
-        dot.className = 'camera-dot local';
-        label.textContent = '本地摄像头';
-      }
-    }
-
-    function toggleCamera() {
-      if (cameraMode === 'server') { switchToLocal(); }
-      else { switchToServer(); }
-    }
-
-    switchToServer();
+    switchToLocal();
 
     if (navigator.mediaDevices) {
       navigator.mediaDevices.ondevicechange = () => {
@@ -203,7 +181,7 @@ let allFrames = [], isCapturing = false, captureTimer = null, frameCounter = 0, 
     inferenceServerOptions = normalizeServerOptions([
       { id: '3090', name: 'RTX 3090', protocol: 'http', host: '192.168.0.200', port: 11434, basePath: '', apiStyle: 'ollama' },
       { id: 'orin', name: 'Orin', protocol: 'http', host: '192.168.1.123', port: 8080, basePath: '/v1', apiStyle: 'openai' },
-      { id: 'local', name: 'Mac Mini', protocol: 'http', host: 'localhost', port: 11434, basePath: '', apiStyle: 'ollama' }
+      { id: 'local', name: 'Mac Mini', protocol: 'http', host: '192.168.1.241', port: 11434, basePath: '', apiStyle: 'ollama' }
     ]);
     renderServerOptions('3090');
 
@@ -216,12 +194,6 @@ let allFrames = [], isCapturing = false, captureTimer = null, frameCounter = 0, 
         if (!configSynced && status && status.config) {
           const cfg = status.config;
           inferenceServerOptions = normalizeServerOptions(cfg.inferenceServers || []);
-          // 如果服务器返回的推理服务器列表为空，使用默认配置作为回退
-          if (inferenceServerOptions.length === 0) {
-            inferenceServerOptions = normalizeServerOptions([
-              { id: 'local', name: 'Mac Mini', protocol: 'http', host: 'localhost', port: 11434, basePath: '', apiStyle: 'ollama' }
-            ]);
-          }
           document.getElementById('configPrompt').value = cfg.prompt || document.getElementById('configPrompt').placeholder;
           renderServerOptions(cfg.selectedInferenceServerId);
           autoResizeTextarea(document.getElementById('configPrompt'));
@@ -230,9 +202,6 @@ let allFrames = [], isCapturing = false, captureTimer = null, frameCounter = 0, 
 
         const serverCapturing = status.isCapturing;
         if (serverCapturing !== isCapturing) {
-          if (localCaptureRequested && !serverCapturing) {
-            return;
-          }
           isCapturing = serverCapturing;
           document.getElementById('startBtn').disabled = serverCapturing;
           document.getElementById('stopBtn').disabled = !serverCapturing;
@@ -346,17 +315,8 @@ let allFrames = [], isCapturing = false, captureTimer = null, frameCounter = 0, 
       } catch (err) { body.innerHTML = '<div class="empty-state">加载失败</div>'; }
     }
 
-    function closeFrameModal() { 
-      const modal = document.getElementById('frameModal');
-      if (modal) modal.style.display = 'none'; 
-    }
-    
-    function handleModalClick(e) { 
-      const modal = document.getElementById('frameModal');
-      if (modal && e.target === modal) closeFrameModal(); 
-    }
-    
-    window.addEventListener('click', handleModalClick);
+    function closeFrameModal() { document.getElementById('frameModal').style.display = 'none'; }
+    window.onclick = function(e) { if (e.target === document.getElementById('frameModal')) closeFrameModal(); }
 
     function setConfigEditable(enabled) {
       document.getElementById('configModel').disabled = !enabled;
@@ -395,7 +355,6 @@ let allFrames = [], isCapturing = false, captureTimer = null, frameCounter = 0, 
         });
         isCapturing = true; frameCounter = 0;
         localLastThumbData = null; localLastUploadTime = 0;
-        localCaptureRequested = true;
         document.getElementById('startBtn').disabled = true;
         document.getElementById('stopBtn').disabled = false;
         setConfigEditable(false);
@@ -472,7 +431,6 @@ let allFrames = [], isCapturing = false, captureTimer = null, frameCounter = 0, 
     async function stopCapture() {
       if (captureTimer) { clearInterval(captureTimer); captureTimer = null; }
       isCapturing = false;
-      localCaptureRequested = false;
       localLastThumbData = null; localLastUploadTime = 0;
       document.getElementById('startBtn').disabled = false;
       document.getElementById('stopBtn').disabled = true;

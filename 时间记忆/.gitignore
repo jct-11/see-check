@@ -1,0 +1,15 @@
+node_modules/
+dist/
+data/
+logs/
+.env
+.DS_Store
+.setup/
+
+# video, image
+keyframe/**/*.jpg
+keyframe/**/*.jpeg
+keyframe/**/*.mp4
+keyframe/__
+.idea
+__pycache__/

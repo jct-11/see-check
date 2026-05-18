@@ -79,6 +79,7 @@ async function listFrames(memoryStore) {
 }
 
 function registerMemoryRoutes(router, ctx) {
+
   router.get('/api/status', (req, res) => {
     sendJson(res, 200, {
       config: ctx.getConfig(),
@@ -92,8 +93,8 @@ function registerMemoryRoutes(router, ctx) {
     try {
       const frames = await listFrames(ctx.memoryStore);
       sendJson(res, 200, frames);
-    } catch (e) {
-      sendJson(res, 500, { error: e.message });
+    } catch (err) {
+      sendJson(res, 500, { error: 'Failed to list frames', message: err.message });
     }
   });
 

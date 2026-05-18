@@ -12,6 +12,7 @@ const { registerQueryRoutes } = require('./routes/query');
 const { registerSpatialRoutes } = require('./routes/spatial_route');
 const { registerMemoryRoutes } = require('./routes/memory');
 const { registerWebRoutes } = require('./routes/web');
+const { registerBatchRoutes } = require('./routes/batch');
 const { registerLogsRoutes } = require('./routes/logs');
 const { CERTS_DIR } = require('../utils/paths');
 const { getLocalIP } = require('../utils/net');
@@ -139,6 +140,7 @@ function createApp(ctx) {
   registerConfigRoutes(router, ctx);
   registerCaptureRoutes(router, ctx);
   registerQueryRoutes(router, ctx);
+  registerBatchRoutes(router, ctx);
   registerSpatialRoutes(router, ctx);
   registerMemoryRoutes(router, ctx);
   registerLogsRoutes(router);
@@ -191,6 +193,15 @@ function createApp(ctx) {
       });
     }
 
+    server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        console.error('❌ HTTP 端口 ' + port + ' 已被占用，请先释放端口：fuser -k ' + port + '/tcp');
+        process.exit(1);
+      } else {
+        flowWarn('服务', 'HTTP 启动失败', { error: err.message });
+      }
+    });
+
     return new Promise((resolve) => {
       server.listen(port, '0.0.0.0', () => {
         const ip = getLocalIP();
@@ -202,6 +213,13 @@ function createApp(ctx) {
         console.log('📍 本地地址：http://localhost:' + port);
         console.log('🌐 局域网 HTTP：http://' + ip + ':' + port);
         if (httpsServer) {
+          httpsServer.on('error', (err) => {
+            if (err.code === 'EADDRINUSE') {
+              console.log('🔒 HTTPS 端口 ' + httpsPort + ' 被占用，跳过 HTTPS（仅 HTTP 可用）');
+            } else {
+              flowWarn('服务', 'HTTPS 启动失败', { error: err.message });
+            }
+          });
           httpsServer.listen(httpsPort, '0.0.0.0', () => {
             console.log('🔒 局域网 HTTPS：https://' + ip + ':' + httpsPort + '  ← 其它设备请用此地址');
           });

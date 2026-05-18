@@ -1,0 +1,76 @@
+{
+  "fps": 20,
+  "prompt": "请描述这张图片的具体内容，重点关注：人物（人数、外貌特征、穿着、具体动作）、物品（型号、颜色、位置）、场景变化（与空旷状态的不同之处）。忽略不变的背景描述，只描述画面中有特征的元素。如果画面为空场景，仅回复\"空场景，无人无特殊物品\"。",
+  "model": "gemma4:e2b",
+  "inferenceRequestTimeoutSec": 120,
+  "inferenceServers": [
+    {
+      "id": "3090",
+      "name": "RTX 3090",
+      "protocol": "http",
+      "host": "192.168.0.200",
+      "port": 11434,
+      "basePath": "",
+      "apiStyle": "ollama",
+      "model": ""
+    },
+    {
+      "id": "orin",
+      "name": "Orin",
+      "protocol": "http",
+      "host": "192.168.1.123",
+      "port": 8080,
+      "basePath": "/v1",
+      "apiStyle": "openai",
+      "model": "gemma-4-E2B-it-UD-Q8_K_XL.gguf"
+    },
+    {
+      "id": "local",
+      "name": "Mac Mini",
+      "protocol": "http",
+      "host": "localhost",
+      "port": 11434,
+      "basePath": "",
+      "apiStyle": "ollama",
+      "model": ""
+    }
+  ],
+  "selectedInferenceServerId": "3090",
+  "ollamaBase": "http://192.168.0.200:11434",
+  "embedBase": "http://192.168.0.200:11434",
+  "capture": {
+    "source": "ffmpeg",
+    "ffmpeg": {
+      "deviceIndex": 0,
+      "framerate": 30,
+      "width": 1280,
+      "height": 720,
+      "quality": 5
+    }
+  },
+  "pipeline": {
+    "quickFilter": "pixelDiff",
+    "pixelDiff": {
+      "diffThreshold": 8,
+      "forceIntervalMs": 15000
+    },
+    "keyframe": "passthrough",
+    "windowRepresentative": {
+      "windowMs": 5000,
+      "strategy": "middle"
+    },
+    "batch": {
+      "enabled": false,
+      "maxSize": 4,
+      "windowMs": 2000,
+      "concurrency": 1
+    }
+  },
+  "memory": {
+    "store": "sqlite"
+  },
+  "vector": {
+    "store": "lancedb",
+    "dir": "data/vectors"
+  }
+}

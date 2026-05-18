@@ -1,0 +1,29 @@
+{
+  "name": "stmem",
+  "version": "1.0.0",
+  "description": "识境视觉空间记忆系统",
+  "main": "src/dashboard.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/dashboard.js --port 8080",
+    "dev": "node --watch src/dashboard.js --port 8080",
+    "dashboard": "node src/dashboard.js --port 8080"
+  },
+  "keywords": [
+    "gemma4",
+    "vision",
+    "memory",
+    "ai"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@lancedb/lancedb": "^0.27.2",
+    "@tensorflow/tfjs-node": "^4.22.0",
+    "@vladmandic/face-api": "^1.7.15",
+    "apache-arrow": "^18.1.0",
+    "better-sqlite3": "^12.9.0",
+    "canvas": "^3.2.3",
+    "formidable": "^3.5.4"
+  }
+}

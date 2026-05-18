@@ -35,8 +35,8 @@
       "model": ""
     }
   ],
-  "selectedInferenceServerId": "3090",
-  "ollamaBase": "http://192.168.0.200:8000",
+  "selectedInferenceServerId": "orin",
+  "ollamaBase": "http://192.168.1.123:8080/v1",
   "embedBase": "http://192.168.0.200:11434",
   "capture": {
     "source": "ffmpeg",

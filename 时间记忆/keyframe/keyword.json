@@ -1,0 +1,75 @@
+{
+  "meta": {
+    "version": "1.0",
+    "description": "Vlog场景专用语义关键字库，基于COCO数据集类别映射",
+    "usage": "用于加权计算关键帧得分，weight越高代表该物体出现时画面越重要"
+  },
+  "categories": {
+    "core_subjects": {
+      "description": "核心主体：Vlog的灵魂，通常占据高权重",
+      "keywords": [
+        {"id": 0, "name": "person", "weight": 20, "min_conf": 0.5},
+        {"id": 1, "name": "face", "weight": 25, "min_conf": 0.6, "note": "需配合人脸检测模型，若无则忽略"},
+        {"id": 2, "name": "cell phone", "weight": 15, "min_conf": 0.4, "note": "暗示自拍视角或直播状态"}
+      ]
+    },
+    "interaction_objects": {
+      "description": "强交互物体：暗示具体行为发生，是判断'正在做什么'的关键",
+      "sub_categories": {
+        "food_dining": [
+          {"id": 39, "name": "cup", "weight": 8, "min_conf": 0.4},
+          {"id": 40, "name": "fork", "weight": 10, "min_conf": 0.5},
+          {"id": 41, "name": "knife", "weight": 10, "min_conf": 0.5},
+          {"id": 42, "name": "spoon", "weight": 9, "min_conf": 0.5},
+          {"id": 43, "name": "bottle", "weight": 6, "min_conf": 0.4},
+          {"id": 44, "name": "wine glass", "weight": 12, "min_conf": 0.5},
+          {"id": 45, "name": "dining table", "weight": 5, "min_conf": 0.6, "note": "作为背景参考，权重较低"}
+        ],
+        "work_leisure": [
+          {"id": 62, "name": "laptop", "weight": 12, "min_conf": 0.5},
+          {"id": 63, "name": "mouse", "weight": 8, "min_conf": 0.6},
+          {"id": 64, "name": "keyboard", "weight": 8, "min_conf": 0.6},
+          {"id": 65, "name": "book", "weight": 7, "min_conf": 0.5},
+          {"id": 66, "name": "scissors", "weight": 6, "min_conf": 0.5}
+        ],
+        "travel_outdoor": [
+          {"id": 27, "name": "backpack", "weight": 14, "min_conf": 0.5},
+          {"id": 28, "name": "umbrella", "weight": 10, "min_conf": 0.5},
+          {"id": 29, "name": "suitcase", "weight": 18, "min_conf": 0.6, "note": "强烈暗示出发/到达事件"},
+          {"id": 30, "name": "bicycle", "weight": 13, "min_conf": 0.5},
+          {"id": 31, "name": "motorcycle", "weight": 12, "min_conf": 0.5},
+          {"id": 32, "name": "car", "weight": 8, "min_conf": 0.5},
+          {"id": 33, "name": "traffic light", "weight": 4, "min_conf": 0.6}
+        ],
+        "pets": [
+          {"id": 15, "name": "cat", "weight": 18, "min_conf": 0.5},
+          {"id": 16, "name": "dog", "weight": 18, "min_conf": 0.5},
+          {"id": 17, "name": "teddy bear", "weight": 10, "min_conf": 0.5}
+        ]
+      }
+    },
+    "environment_context": {
+      "description": "环境语境：用于空镜筛选或场景分类，单独出现时权重较低",
+      "keywords": [
+        {"id": 56, "name": "couch", "weight": 4, "min_conf": 0.5},
+        {"id": 57, "name": "bed", "weight": 5, "min_conf": 0.5},
+        {"id": 58, "name": "tv", "weight": 4, "min_conf": 0.5},
+        {"id": 59, "name": "potted plant", "weight": 3, "min_conf": 0.5},
+        {"id": 60, "name": "vase", "weight": 4, "min_conf": 0.5},
+        {"id": 61, "name": "clock", "weight": 3, "min_conf": 0.5}
+      ]
+    },
+    "exclusion_list": {
+      "description": "排除列表：即使检测到也不应视为关键特征的物体（通常是背景杂物）",
+      "keywords": [
+        {"id": 70, "name": "toilet", "weight": 0, "min_conf": 0.0},
+        {"id": 71, "name": "floor", "weight": 0, "min_conf": 0.0},
+        {"id": 72, "name": "wall", "weight": 0, "min_conf": 0.0}
+      ]
+    }
+  },
+  "global_settings": {
+    "min_object_size_ratio": 0.005,
+    "description": "物体面积小于画面0.5%时忽略，防止远处噪点干扰"
+  }
+}
