@@ -841,6 +841,10 @@ let frameTime = 0;
 let frameCount = 0;
 // GUI：降采样步长
 let guiDownsample = 5;
+/** GUI: point cloud point size (matches viser default) */
+let guiPointSize = 0.00001;
+/** GUI: confidence threshold for point filtering (same as viser default) */
+let guiConfThreshold = 0.7;
 // 统计信息更新回调
 let onStatsUpdate = null;
 
@@ -1875,18 +1879,7 @@ async function fetchNextFrame() {
       const flatColorsArr = colors_b64 ? base64ToFloat32Array(colors_b64) : new Float32Array(numVertices * 3).fill(0.5);
       const flatConfsArr = confs_b64 ? base64ToFloat32Array(confs_b64) : new Float32Array(numVertices).fill(1.0);
       
-      // Recenter point cloud to scene center (like Viser does)
-      let rx = 0, ry = 0, rz = 0;
-      if (sceneCenter && sceneCenter.length === 3) {
-        rx = sceneCenter[0]; ry = sceneCenter[1]; rz = sceneCenter[2];
-      }
-      if (rx !== 0 || ry !== 0 || rz !== 0) {
-        for (let i = 0; i < numVertices; i++) {
-          flatPositions[i * 3]     -= rx;
-          flatPositions[i * 3 + 1] -= ry;
-          flatPositions[i * 3 + 2] -= rz;
-        }
-      }
+
       
       framePointClouds[currentFetchFrame] = {
         positions: flatPositions,
@@ -1903,7 +1896,7 @@ async function fetchNextFrame() {
       }
       updateTrajectoryLine();
       
-      var totalRenderedFrames = Object.keys(framePointCloudObjects).length;
+      var totalRenderedFrames = Object.keys(framePointClouds).length;
       addLog('帧 ' + currentFetchFrame + (totalFramesAvailable ? '/' + totalFramesAvailable : '') + ' 点云加载完成，共 ' + numVertices + ' 点，累计 ' + totalRenderedFrames + ' 帧', 'ok');
       
       currentFetchFrame++;
@@ -1983,7 +1976,7 @@ function addFramePointCloudToScene(frameIndex) {
 
   // 优化：单次遍历完成 isfinite + 置信度过滤 + 下采样
   const stride = Math.max(1, guiDownsample);
-  const confThreshold = 0;
+  const confThreshold = guiConfThreshold;
   
   // 预分配数组（预估大小，避免多次扩容）
   var maxSize = Math.ceil(numPoints / stride);
@@ -2075,7 +2068,7 @@ function updateMergedPointCloud() {
     }
     
     var material = new THREE.PointsMaterial({
-      size: 0.00001,
+      size: guiPointSize,
       vertexColors: true,
       sizeAttenuation: true,
       transparent: false,
