@@ -40,7 +40,33 @@ function disposeObject(obj) {
   }
 }
 
-/** 相机位姿平滑（指数移动平均 + 步长限制） */
+/** 相机位姿平滑（仅位置平滑，旋转不平滑避免拐弯变形） */
+function smoothCameraPose(rawPose) {
+  if (!SpatialState.smoothPose) {
+    SpatialState.smoothPose = {
+      t: [...rawPose.t_c2w],
+      R: rawPose.R_c2w.map(row => [...row])
+    };
+    return SpatialState.smoothPose;
+  }
+
+  const alpha = 0.1;
+  const maxStep = SpatialState.maxPoseStep;
+
+  // 平滑平移（适度平滑）
+  for (let i = 0; i < 3; i++) {
+    let diff = rawPose.t_c2w[i] - SpatialState.smoothPose.t[i];
+    if (Math.abs(diff) > maxStep) {
+      diff = diff > 0 ? maxStep : -maxStep;
+    }
+    SpatialState.smoothPose.t[i] += alpha * diff;
+  }
+
+  // 旋转直接使用原始值，不平滑，拐弯就是锐利的直角
+  SpatialState.smoothPose.R = rawPose.R_c2w.map(row => [...row]);
+
+  return SpatialState.smoothPose;
+}
 
 /**
  * 将 Base64 编码字符串转换为 Float32Array
@@ -102,6 +128,9 @@ const SpatialState = {
   animationId: null,
   resizeObserver: null,
   domCache: null,
+  smoothPose: null,
+  smoothAlpha: 0.2,
+  maxPoseStep: 0.1,
 };
 
 // ============== Legacy variable compatibility (old code references these) ==============
@@ -805,7 +834,7 @@ let frameTime = 0;
 // 帧计数器
 let frameCount = 0;
 // GUI：降采样步长
-let guiDownsample = 10;
+let guiDownsample = 5;
 /** GUI: point cloud point size (matches viser default) */
 let guiPointSize = 0.00001;
 /** GUI: confidence threshold for point filtering (same as viser default) */
@@ -853,7 +882,7 @@ async function init3DScene() {
 
   // 创建场景并设置背景色
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x1a1a2e);
+  scene.background = new THREE.Color(0xd0d0d0);
 
   const width = container.clientWidth || 800;
   const height = container.clientHeight || 600;
@@ -1012,7 +1041,156 @@ function animate() {
   renderer.render(scene, camera3d);
 }
 
+function updateCameraTrajectory(cameraPoses) {
+  if (!THREE || !scene || !cameraPoses || cameraPoses.length < 2) return;
 
+  if (trajectoryTube) {
+    scene.remove(trajectoryTube);
+    if (trajectoryTube.geometry) trajectoryTube.geometry.dispose();
+    if (trajectoryTube.material) trajectoryTube.material.dispose();
+    trajectoryTube = null;
+  }
+
+  const points = cameraPoses.map(pose => {
+    const pos = pose.position;
+    return new THREE.Vector3(pos[0], pos[1], pos[2]);
+  });
+
+  if (points.length < 2) return;
+
+  const curve = new THREE.CatmullRomCurve3(points);
+  const numSegments = Math.max(20, points.length * 2);
+  const tubeRadius = 0.005;
+  const geometry = new THREE.TubeGeometry(curve, numSegments, tubeRadius, 8, false);
+
+  const colors = [];
+  for (let i = 0; i < geometry.attributes.position.count; i++) {
+    const t = i / geometry.attributes.position.count;
+    const hue = t * 0.8 + 0.15;
+    const color = new THREE.Color().setHSL(hue, 0.9, 0.6);
+    colors.push(color.r, color.g, color.b);
+  }
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+  const material = new THREE.MeshBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.8
+  });
+
+  trajectoryTube = new THREE.Mesh(geometry, material);
+  scene.add(trajectoryTube);
+}
+
+function updateCameraFrustums(cameraPoses) {
+  if (!THREE || !scene) return;
+
+  cameraFrustums.forEach(obj => {
+    frustumGroup.remove(obj);
+    if (obj.geometry) obj.geometry.dispose();
+    if (obj.material) {
+      if (Array.isArray(obj.material)) {
+        obj.material.forEach(m => m.dispose());
+      } else {
+        obj.material.dispose();
+      }
+    }
+  });
+  cameraFrustums = [];
+
+  if (!cameraPoses || cameraPoses.length === 0) return;
+
+  // 绘制相机轨迹线
+  if (cameraPoses.length > 1) {
+    const trajectoryPoints = [];
+    cameraPoses.forEach(pose => {
+      const pos = pose.position;
+      trajectoryPoints.push(new THREE.Vector3(pos[0], pos[1], pos[2]));
+    });
+
+    const curve = new THREE.CatmullRomCurve3(trajectoryPoints);
+    const curvePoints = curve.getPoints(cameraPoses.length * 2);
+    const trajectoryGeom = new THREE.BufferGeometry().setFromPoints(curvePoints);
+    const trajectoryMat = new THREE.LineBasicMaterial({ 
+      color: 0xff6b6b, 
+      transparent: true, 
+      opacity: 0.6
+    });
+    const trajectoryLine = new THREE.Line(trajectoryGeom, trajectoryMat);
+    frustumGroup.add(trajectoryLine);
+    cameraFrustums.push(trajectoryLine);
+  }
+
+  const step = Math.max(1, Math.floor(cameraPoses.length / 60));
+
+  cameraPoses.forEach((pose, index) => {
+    if (index % step !== 0 && index !== cameraPoses.length - 1) return;
+
+    const pos = pose.position;
+    const camPos = new THREE.Vector3(pos[0], pos[1], pos[2]);
+
+    // Render camera coordinate axes (same convention as viser)
+    if (pose.rotation) {
+      const R = pose.rotation;
+      const xAxis = new THREE.Vector3(R[0][0], R[1][0], R[2][0]);
+      const yAxis = new THREE.Vector3(R[0][1], R[1][1], R[2][1]);
+      const zAxis = new THREE.Vector3(R[0][2], R[1][2], R[2][2]);
+
+      const axisLen = 0.1;
+      const axisRadius = 0.004;
+
+      // X 轴（红色）
+      const xGeom = new THREE.CylinderGeometry(axisRadius, axisRadius, axisLen, 8);
+      xGeom.translate(0, axisLen / 2, 0);
+      xGeom.rotateZ(-Math.PI / 2);
+      const xMat = new THREE.MeshBasicMaterial({ color: 0xff3333, transparent: true, opacity: 0.9 });
+      const xAxisMesh = new THREE.Mesh(xGeom, xMat);
+      xAxisMesh.position.copy(camPos);
+      xAxisMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), xAxis);
+      frustumGroup.add(xAxisMesh);
+      cameraFrustums.push(xAxisMesh);
+
+      // Y 轴（绿色）
+      const yGeom = new THREE.CylinderGeometry(axisRadius, axisRadius, axisLen, 8);
+      yGeom.translate(0, axisLen / 2, 0);
+      const yMat = new THREE.MeshBasicMaterial({ color: 0x33ff33, transparent: true, opacity: 0.9 });
+      const yAxisMesh = new THREE.Mesh(yGeom, yMat);
+      yAxisMesh.position.copy(camPos);
+      yAxisMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), yAxis);
+      frustumGroup.add(yAxisMesh);
+      cameraFrustums.push(yAxisMesh);
+
+      // Z 轴（蓝色）
+      const zGeom = new THREE.CylinderGeometry(axisRadius, axisRadius, axisLen, 8);
+      zGeom.translate(0, axisLen / 2, 0);
+      zGeom.rotateX(Math.PI / 2);
+      const zMat = new THREE.MeshBasicMaterial({ color: 0x3366ff, transparent: true, opacity: 0.9 });
+      const zAxisMesh = new THREE.Mesh(zGeom, zMat);
+      zAxisMesh.position.copy(camPos);
+      zAxisMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), zAxis);
+      frustumGroup.add(zAxisMesh);
+      cameraFrustums.push(zAxisMesh);
+
+      // 相机中心点
+      const centerGeom = new THREE.SphereGeometry(0.0075, 8, 8);
+      const centerMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
+      const centerMesh = new THREE.Mesh(centerGeom, centerMat);
+      centerMesh.position.copy(camPos);
+      frustumGroup.add(centerMesh);
+      cameraFrustums.push(centerMesh);
+    } else {
+      // 没有旋转数据时，只显示位置标记（兼容旧数据）
+      const hue = (index / cameraPoses.length) * 0.8 + 0.15;
+      const markerColor = new THREE.Color().setHSL(hue, 0.8, 0.6);
+      const markerGeom = new THREE.SphereGeometry(0.015, 12, 12);
+      const markerMat = new THREE.MeshBasicMaterial({ color: markerColor, transparent: true, opacity: 0.9 });
+      const marker = new THREE.Mesh(markerGeom, markerMat);
+      marker.position.copy(camPos);
+      frustumGroup.add(marker);
+      cameraFrustums.push(marker);
+    }
+  });
+}
 
 function reset3DCamera() {
   if (!camera3d || !window.controls) return;
@@ -1362,7 +1540,9 @@ function updateTrajectoryLine() {
     trajectoryPoints.push(new THREE.Vector3(t[0], t[1], t[2]));
   }
   
-  const trajectoryGeom = new THREE.BufferGeometry().setFromPoints(trajectoryPoints);
+  const curve = new THREE.CatmullRomCurve3(trajectoryPoints);
+  const curvePoints = curve.getPoints(validCameras.length * 3);
+  const trajectoryGeom = new THREE.BufferGeometry().setFromPoints(curvePoints);
   const trajectoryMat = new THREE.LineBasicMaterial({ color: 0xff3333, linewidth: 2, transparent: true, opacity: 1.0 });
   cameraTrajectoryLine = new THREE.Line(trajectoryGeom, trajectoryMat);
   frustumGroup.add(cameraTrajectoryLine);
@@ -1378,9 +1558,8 @@ function flyToCamera(frameIndex) {
   const t_raw = cam.t_c2w || cam.t_w2c;
   const R_raw = (cam.R_c2w || cam.R_w2c).flat();
   
-  // 转换为 Three.js 场景坐标（与 frustumGroup 变换一致）
-  const cx = sceneCenter[0], cy = sceneCenter[1], cz = sceneCenter[2];
-  const camPos = new THREE.Vector3(-t_raw[0] + cx, -t_raw[1] + cy, t_raw[2] - cz);
+  // Camera world position — use C2W translation directly (same as viser)
+  const camPos = new THREE.Vector3(t_raw[0], t_raw[1], t_raw[2]);
   
   // Camera forward direction from rotation matrix (same as viser)
   const forward = new THREE.Vector3(R_raw[2], R_raw[5], R_raw[8]);
@@ -1455,12 +1634,11 @@ function updateCameraFollow(frameIndex) {
   const t_raw = cam.t_c2w || cam.t_w2c;
   const R_raw = (cam.R_c2w || cam.R_w2c).flat();
   
-  // 转换为 Three.js 场景坐标（与 frustumGroup 变换一致）
-  const cx = sceneCenter[0], cy = sceneCenter[1], cz = sceneCenter[2];
-  const camWorldPos = new THREE.Vector3(-t_raw[0] + cx, -t_raw[1] + cy, t_raw[2] - cz);
+  // Camera world position — use C2W translation directly, but flip X/Y for scale(-1,-1,1)
+  const camWorldPos = new THREE.Vector3(-t_raw[0], -t_raw[1], t_raw[2]);
   
-  // Camera forward direction from rotation matrix (same as viser)
-  const forward = new THREE.Vector3(R_raw[2], R_raw[5], R_raw[8]);
+  // Camera forward direction from rotation matrix, flip X/Y for scale(-1,-1,1)
+  const forward = new THREE.Vector3(-R_raw[2], -R_raw[5], R_raw[8]);
   forward.normalize();
   
   // 平滑处理
@@ -1472,9 +1650,11 @@ function updateCameraFollow(frameIndex) {
     smoothedRawLookDir.lerp(forward, POSE_SMOOTH_FACTOR).normalize();
   }
   
-  // 视角位置 = 相机位置，注视点 = 相机位置 + 朝向方向
-  const followPos = smoothedRawCamPos.clone();
-  const lookAtPoint = smoothedRawCamPos.clone().addScaledVector(smoothedRawLookDir, 1.0);
+  // 视角位置 = 相机位置 + 反向朝向（观察点），注视点 = 相机位置
+  // 这样相机就像眼睛一样从相机位置看出去！
+  const followDist = SpatialState.cameraFollowDistance || 2.0;
+  const followPos = smoothedRawCamPos.clone().addScaledVector(smoothedRawLookDir, -followDist);
+  const lookAtPoint = smoothedRawCamPos.clone();
   
   currentCameraTargetPos = followPos;
   currentCameraLookAt = lookAtPoint;
@@ -1544,6 +1724,7 @@ async function startFrameByFrameFetch(batchId, totalFrames) {
   framePointCloudObjects = {};
   
   // 重置状态
+  framePointCloudObjects = {};
   framePointClouds = [];
   accumulatedPoints = [];
   accumulatedColors = [];
@@ -2079,12 +2260,6 @@ async function fetchMetadata(batchId) {
         sceneCenter = metadata.scene_center || [0, 0, 0];
         sceneScale = metadata.scene_scale || 1.0;
         addLog('获取 metadata 成功，中心: [' + sceneCenter.map(function(v) { return v.toFixed(2); }).join(', ') + '], 尺度: ' + sceneScale.toFixed(2), 'ok');
-
-        // 将点云和相机轨迹居中到原点（与 Viser 一致）
-        // cloudGroup/frustumGroup 有 scale(-1,-1,1)，所以位置偏移需补偿符号
-        if (cloudGroup) cloudGroup.position.set(sceneCenter[0], sceneCenter[1], -sceneCenter[2]);
-        if (frustumGroup) frustumGroup.position.set(sceneCenter[0], sceneCenter[1], -sceneCenter[2]);
-
         fitCameraToScene();
         return metadata;
       }
@@ -2132,8 +2307,12 @@ async function fetchCameras(batchId) {
 async function fetchAllExtraData(batchId, totalFrames) {
   addLog('开始获取额外数据...', 'info');
   
-  // 获取 metadata（scene center/scale 用于相机定位）
-  await fetchMetadata(batchId);
+  // 获取 metadata 和 cameras（与 see/ 一致）
+  await Promise.all([
+    fetchMetadata(batchId),
+    fetchCameras(batchId),
+    fetchManifest(batchId)
+  ]);
   
   // 使用 cameras.json 数据构建视锥体（与 see/ 完全一致）
   if (camerasData && camerasData.length > 0) {
@@ -2161,6 +2340,9 @@ function buildFrustumsFromCamerasData(camData) {
   // 计算采样步长（最多显示 60 个相机坐标系）
   const step = Math.max(1, Math.floor(S / 60));
   
+  // 重置位姿平滑
+  SpatialState.smoothPose = null;
+  
   for (let i = 0; i < S; i++) {
     if (i % step !== 0 && i !== S - 1) continue;
     
@@ -2169,13 +2351,16 @@ function buildFrustumsFromCamerasData(camData) {
     const R = cam.R_c2w || cam.R_w2c;
     if (!t || !R) continue;
     
-    // Camera world position — raw model output, group scale(-1,-1,1) handles coord flip
-    const camPos = new THREE.Vector3(t[0], t[1], t[2]);
+    // 位姿平滑
+    const smoothPose = smoothCameraPose(cam);
     
-    // Camera coordinate axes from rotation matrix, group scale handles coord flip
-    const xAxis = new THREE.Vector3(R[0][0], R[1][0], R[2][0]);
-    const yAxis = new THREE.Vector3(R[0][1], R[1][1], R[2][1]);
-    const zAxis = new THREE.Vector3(R[0][2], R[1][2], R[2][2]);
+    // Camera world position — use C2W directly (same as viser)
+    const camPos = new THREE.Vector3(-smoothPose.t[0], -smoothPose.t[1], smoothPose.t[2]);
+    
+    // Extract camera coordinate axes from rotation matrix (same as viser)
+    const xAxis = new THREE.Vector3(-smoothPose.R[0][0], -smoothPose.R[1][0], smoothPose.R[2][0]);
+    const yAxis = new THREE.Vector3(-smoothPose.R[0][1], -smoothPose.R[1][1], smoothPose.R[2][1]);
+    const zAxis = new THREE.Vector3(-smoothPose.R[0][2], -smoothPose.R[1][2], smoothPose.R[2][2]);
     
     const axisLen = 0.1;
     const axisRadius = 0.004;
@@ -2221,6 +2406,28 @@ function buildFrustumsFromCamerasData(camData) {
     cameraFrustums.push(centerMesh);
   }
   
+  // 绘制相机轨迹线（连接所有相机位置）
+  if (S > 1) {
+    const trajectoryPoints = [];
+    SpatialState.smoothPose = null;
+    for (let i = 0; i < S; i++) {
+      const cam = camData[i];
+      const t = cam.t_c2w || cam.t_w2c;
+      if (t) {
+        const smoothPose = smoothCameraPose(cam);
+        trajectoryPoints.push(new THREE.Vector3(-smoothPose.t[0], -smoothPose.t[1], smoothPose.t[2]));
+      }
+    }
+    if (trajectoryPoints.length > 1) {
+      const curve = new THREE.CatmullRomCurve3(trajectoryPoints);
+      const curvePoints = curve.getPoints(S * 2);
+      const trajectoryGeom = new THREE.BufferGeometry().setFromPoints(curvePoints);
+      const trajectoryMat = new THREE.LineBasicMaterial({ color: 0xff6b6b, transparent: true, opacity: 0.6 });
+      const trajectoryLine = new THREE.Line(trajectoryGeom, trajectoryMat);
+      frustumGroup.add(trajectoryLine);
+      cameraFrustums.push(trajectoryLine);
+    }
+  }
 }
 
 function generateDepthColors(positions) {
@@ -2266,6 +2473,20 @@ function generateFrameColors(frameCount) {
   return colors;
 }
 
+function rebuildCameraFrustums() {
+  if (!THREE || !scene) return;
+  
+  cameraFrustums.forEach(frustum => {
+    frustumGroup.remove(frustum);
+    if (frustum.geometry) frustum.geometry.dispose();
+    if (frustum.material) frustum.material.dispose();
+  });
+  cameraFrustums = [];
+  
+  if (camerasData && camerasData.length > 0) {
+    buildFrustumsFromCamerasData(camerasData);
+  }
+}
 
 /**
  * 初始化空间记忆系统
