@@ -943,8 +943,8 @@ function addFramePointCloudToScene(frameIndex) {
     if (i % stride !== 0) continue;
 
     // Raw world coordinates — no transform (matching viser)
-    filteredPos[count * 3] = x;
-    filteredPos[count * 3 + 1] = y;
+    filteredPos[count * 3] = -x;
+    filteredPos[count * 3 + 1] = -y;
     filteredPos[count * 3 + 2] = z;
     filteredCol[count * 3] = colors[i * 3];
     filteredCol[count * 3 + 1] = colors[i * 3 + 1];
@@ -1034,7 +1034,7 @@ function updateTrajectoryLine() {
     const t = c.t_c2w || c.t_w2c;
     if (!t || !Array.isArray(t) || t.length !== 3) continue;
     // Raw world coordinates — no transform (matching viser)
-    pts.push(new THREE.Vector3(t[0], t[1], t[2]));
+    pts.push(new THREE.Vector3(-t[0], -t[1], t[2]));
   }
   if (pts.length < 2) return;
 
@@ -1080,12 +1080,12 @@ function updateCameraFrustums() {
     const t = cam.t_c2w || cam.t_w2c;
     const R = cam.R_c2w || cam.R_w2c;
     // Raw world coordinates — no transform
-    const pos = new THREE.Vector3(t[0], t[1], t[2]);
+    const pos = new THREE.Vector3(-t[0], -t[1], t[2]);
 
     // Camera axes from rotation matrix columns
-    const xAxis = new THREE.Vector3(R[0][0], R[1][0], R[2][0]);
-    const yAxis = new THREE.Vector3(R[0][1], R[1][1], R[2][1]);
-    const zAxis = new THREE.Vector3(R[0][2], R[1][2], R[2][2]);
+    const xAxis = new THREE.Vector3(-R[0][0], -R[1][0], R[2][0]);
+    const yAxis = new THREE.Vector3(-R[0][1], -R[1][1], R[2][1]);
+    const zAxis = new THREE.Vector3(-R[0][2], -R[1][2], R[2][2]);
 
     function makeAxis(dir, color) {
       const g = new THREE.CylinderGeometry(axisRadius, axisRadius, axisLen, 8);
@@ -1156,8 +1156,8 @@ function updateCameraFollow(frameIndex) {
   const t = cam.t_c2w || cam.t_w2c;
   const R = (cam.R_c2w || cam.R_w2c).flat();
   // Raw world coordinates — no transform (matching viser)
-  const camPos = new THREE.Vector3(t[0], t[1], t[2]);
-  const forward = new THREE.Vector3(R[2], R[5], R[8]).normalize();
+  const camPos = new THREE.Vector3(-t[0], -t[1], t[2]);
+  const forward = new THREE.Vector3(-R[2], -R[5], R[8]).normalize();
 
   // Smooth follow
   if (!followSmoothedPos) {
