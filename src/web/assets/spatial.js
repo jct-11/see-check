@@ -805,7 +805,7 @@ let frameTime = 0;
 // 帧计数器
 let frameCount = 0;
 // GUI：降采样步长
-let guiDownsample = 7;   // balance between density and noise
+let guiDownsample = 5;   // balance between density and noise
 /** GUI: point cloud point size (matches viser default) */
 let guiPointSize = 0.00001;
 /** GUI: confidence threshold for point filtering (same as viser default) */
