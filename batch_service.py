@@ -199,7 +199,7 @@ def load_model():
         img_size=IMAGE_SIZE,
         patch_size=PATCH_SIZE,
         enable_3d_rope=True,
-        enable_point=True,  # Model-direct world_points (end-to-end learned, more accurate than depth unprojection)
+        enable_point=False,  # Depth-unprojected points (consistent with stream.py/live_camera.py)
         max_frame_num=1024,
         kv_cache_sliding_window=64,
         kv_cache_scale_frames=NUM_SCALE_FRAMES,
