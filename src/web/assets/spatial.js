@@ -1431,7 +1431,7 @@ let frameRanges = [];
 let mergedPointCloud = null;
 /** 每帧独立的 THREE.Points 对象（保留用于兼容旧逻辑） */
 let framePointCloudObjects = {};
-let maxVisibleFrames = 300;
+let maxVisibleFrames = Infinity;
 let cameraFollowEnabled = false;
 let currentFollowFrameIndex = -1;
 let cameraFollowDistance = 0.8;
@@ -1481,13 +1481,11 @@ function updateTrajectoryLine() {
   if (validCameras.length < 2) return;
   
   const trajectoryPoints = [];
-  const rx = (sceneCenter && sceneCenter.length === 3) ? sceneCenter[0] : 0;
-  const ry = (sceneCenter && sceneCenter.length === 3) ? sceneCenter[1] : 0;
-  const rz = (sceneCenter && sceneCenter.length === 3) ? sceneCenter[2] : 0;
+  // Use raw camera positions (same coordinate system as point cloud and viser)
   for (let i = 0; i < validCameras.length; i++) {
     const cam = validCameras[i];
     const t = cam.t_c2w || cam.t_w2c;
-    trajectoryPoints.push(new THREE.Vector3(t[0] - rx, t[1] - ry, t[2] - rz));
+    trajectoryPoints.push(new THREE.Vector3(t[0], t[1], t[2]));
   }
   
   const curve = new THREE.CatmullRomCurve3(trajectoryPoints);
@@ -2047,27 +2045,15 @@ function updateMergedPointCloud() {
 }
 
 function updateVisibleFrames() {
-  // 单一点云对象模式：通过 drawRange 控制可见范围
-  if (mergedPointCloud && !cameraFollowEnabled) {
-    const totalFrames = frameRanges.filter(r => r).length;
-    
-    if (totalFrames <= maxVisibleFrames) {
-      // 显示所有点
-      mergedPointCloud.geometry.setDrawRange(0, accumulatedPoints.length / 3);
-    } else {
-      // 只显示最后 maxVisibleFrames 帧
-      const startFrameIdx = totalFrames - maxVisibleFrames;
-      let startPointIdx = 0;
-      for (let i = 0; i < startFrameIdx; i++) {
-        if (frameRanges[i]) {
-          startPointIdx = frameRanges[i].end;
-        }
-      }
-      mergedPointCloud.geometry.setDrawRange(startPointIdx, accumulatedPoints.length / 3 - startPointIdx);
-    }
+  // Always show all accumulated points — no frame limit (matches viser behavior).
+  // Viser uses a deque(maxlen=300) that silently drops the oldest frame buffers
+  // but the merged point cloud already contains all historical points.
+  // Here we keep ALL points visible since accumulatedPoints never drops old frames.
+  if (mergedPointCloud) {
+    mergedPointCloud.geometry.setDrawRange(0, accumulatedPoints.length / 3);
   }
   
-  // 兼容旧的独立对象逻辑（保留但不再使用）
+  // Legacy compatibility
   if (cameraFollowEnabled) {
     Object.keys(framePointCloudObjects).forEach(function(key) {
       if (framePointCloudObjects[key]) {
@@ -2881,6 +2867,27 @@ function resetViewToTop() {
  * 更新轨迹SVG（已废弃，保留占位）
  */
 function updateTrajectorySvg() {}
+
+// 恢复右上传入帧显示元素
+(function() {
+  const container = document.getElementById('spatialCanvasContainer');
+  if (container && !document.getElementById('frameImageLabel')) {
+    const label = document.createElement('div');
+    label.id = 'frameImageLabel';
+    label.className = 'frame-image-label';
+    label.style.display = 'none';
+    label.textContent = '帧 #0';
+    
+    const img = document.createElement('img');
+    img.id = 'frameImagePreview';
+    img.className = 'frame-image-preview';
+    img.style.display = 'none';
+    
+    container.appendChild(label);
+    container.appendChild(img);
+    console.log('✅ 已恢复右上传入帧显示元素');
+  }
+})();
 
 window.addEventListener('load', async () => {
   if (document.getElementById('spatialCanvasContainer')) {
