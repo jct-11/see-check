@@ -805,7 +805,7 @@ let frameTime = 0;
 // 帧计数器
 let frameCount = 0;
 // GUI：降采样步长
-let guiDownsample = 5;   // balance between density and noise
+let guiDownsample = 7;   // balance between density and noise
 /** GUI: point cloud point size (matches viser default) */
 let guiPointSize = 0.00001;
 /** GUI: confidence threshold for point filtering (same as viser default) */
@@ -1323,7 +1323,7 @@ function updateTrajectoryLine() {
     trajectoryPoints.push(new THREE.Vector3(t[0], t[1], t[2]));
   }
   
-  const curve = new THREE.CatmullRomCurve3(trajectoryPoints);
+  const curve = new THREE.CatmullRomCurve3(trajectoryPoints, false, 'catmullrom', 0.5);
   const curvePoints = curve.getPoints(validCameras.length * 3);
   const trajectoryGeom = new THREE.BufferGeometry().setFromPoints(curvePoints);
   const trajectoryMat = new THREE.LineBasicMaterial({ color: 0x78c878, linewidth: 3, transparent: true, opacity: 1.0 });
@@ -1346,7 +1346,7 @@ function flyToCamera(frameIndex) {
   const camPos = new THREE.Vector3(-t_raw[0] + cx, -t_raw[1] + cy, t_raw[2] - cz);
   
   // Camera forward direction from rotation matrix (same as viser)
-  const forward = new THREE.Vector3(R_raw[2], R_raw[5], R_raw[8]);
+  const forward = new THREE.Vector3(-R_raw[2], -R_raw[5], R_raw[8]);
   forward.normalize();
   
   const viewPos = camPos.clone().addScaledVector(forward, cameraFollowDistance);
@@ -1423,7 +1423,7 @@ function updateCameraFollow(frameIndex) {
   const camWorldPos = new THREE.Vector3(-t_raw[0] + cx, -t_raw[1] + cy, t_raw[2] - cz);
   
   // Camera forward direction from rotation matrix (same as viser)
-  const forward = new THREE.Vector3(R_raw[2], R_raw[5], R_raw[8]);
+  const forward = new THREE.Vector3(-R_raw[2], -R_raw[5], R_raw[8]);
   forward.normalize();
   
   // 平滑处理
