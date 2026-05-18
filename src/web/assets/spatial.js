@@ -1064,27 +1064,24 @@ function updateCameraTrajectory(cameraPoses) {
 
   if (points.length < 2) return;
 
-  const curve = new THREE.CatmullRomCurve3(points);
-  const numSegments = Math.max(20, points.length * 2);
-  const tubeRadius = 0.005;
-  const geometry = new THREE.TubeGeometry(curve, numSegments, tubeRadius, 8, false);
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
 
   const colors = [];
-  for (let i = 0; i < geometry.attributes.position.count; i++) {
-    const t = i / geometry.attributes.position.count;
+  for (let i = 0; i < points.length; i++) {
+    const t = i / points.length;
     const hue = t * 0.8 + 0.15;
     const color = new THREE.Color().setHSL(hue, 0.9, 0.6);
     colors.push(color.r, color.g, color.b);
   }
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
 
-  const material = new THREE.MeshBasicMaterial({
+  const material = new THREE.LineBasicMaterial({
     vertexColors: true,
     transparent: true,
     opacity: 0.8
   });
 
-  trajectoryTube = new THREE.Mesh(geometry, material);
+  trajectoryTube = new THREE.Line(geometry, material);
   scene.add(trajectoryTube);
 }
 
@@ -1114,9 +1111,7 @@ function updateCameraFrustums(cameraPoses) {
       trajectoryPoints.push(new THREE.Vector3(pos[0], pos[1], pos[2]));
     });
 
-    const curve = new THREE.CatmullRomCurve3(trajectoryPoints);
-    const curvePoints = curve.getPoints(cameraPoses.length * 2);
-    const trajectoryGeom = new THREE.BufferGeometry().setFromPoints(curvePoints);
+    const trajectoryGeom = new THREE.BufferGeometry().setFromPoints(trajectoryPoints);
     const trajectoryMat = new THREE.LineBasicMaterial({ 
       color: 0xff6b6b, 
       transparent: true, 
@@ -1546,9 +1541,7 @@ function updateTrajectoryLine() {
     trajectoryPoints.push(new THREE.Vector3(t[0], t[1], t[2]));
   }
   
-  const curve = new THREE.CatmullRomCurve3(trajectoryPoints);
-  const curvePoints = curve.getPoints(validCameras.length * 3);
-  const trajectoryGeom = new THREE.BufferGeometry().setFromPoints(curvePoints);
+  const trajectoryGeom = new THREE.BufferGeometry().setFromPoints(trajectoryPoints);
   const trajectoryMat = new THREE.LineBasicMaterial({ color: 0xff3333, linewidth: 2, transparent: true, opacity: 1.0 });
   cameraTrajectoryLine = new THREE.Line(trajectoryGeom, trajectoryMat);
   frustumGroup.add(cameraTrajectoryLine);
@@ -2359,12 +2352,12 @@ function buildFrustumsFromCamerasData(camData) {
     const smoothPose = smoothCameraPose(cam);
     
     // Camera world position — use C2W directly (same as viser)
-    const camPos = new THREE.Vector3(-smoothPose.t[0], -smoothPose.t[1], smoothPose.t[2]);
+    const camPos = new THREE.Vector3(smoothPose.t[0], smoothPose.t[1], smoothPose.t[2]);
     
     // Extract camera coordinate axes from rotation matrix (same as viser)
-    const xAxis = new THREE.Vector3(-smoothPose.R[0][0], -smoothPose.R[1][0], smoothPose.R[2][0]);
-    const yAxis = new THREE.Vector3(-smoothPose.R[0][1], -smoothPose.R[1][1], smoothPose.R[2][1]);
-    const zAxis = new THREE.Vector3(-smoothPose.R[0][2], -smoothPose.R[1][2], smoothPose.R[2][2]);
+    const xAxis = new THREE.Vector3(smoothPose.R[0][0], smoothPose.R[1][0], smoothPose.R[2][0]);
+    const yAxis = new THREE.Vector3(smoothPose.R[0][1], smoothPose.R[1][1], smoothPose.R[2][1]);
+    const zAxis = new THREE.Vector3(smoothPose.R[0][2], smoothPose.R[1][2], smoothPose.R[2][2]);
     
     const axisLen = 0.1;
     const axisRadius = 0.004;
@@ -2419,13 +2412,11 @@ function buildFrustumsFromCamerasData(camData) {
       const t = cam.t_c2w || cam.t_w2c;
       if (t) {
         const smoothPose = smoothCameraPose(cam);
-        trajectoryPoints.push(new THREE.Vector3(-smoothPose.t[0], -smoothPose.t[1], smoothPose.t[2]));
+        trajectoryPoints.push(new THREE.Vector3(smoothPose.t[0], smoothPose.t[1], smoothPose.t[2]));
       }
     }
     if (trajectoryPoints.length > 1) {
-      const curve = new THREE.CatmullRomCurve3(trajectoryPoints);
-      const curvePoints = curve.getPoints(S * 2);
-      const trajectoryGeom = new THREE.BufferGeometry().setFromPoints(curvePoints);
+      const trajectoryGeom = new THREE.BufferGeometry().setFromPoints(trajectoryPoints);
       const trajectoryMat = new THREE.LineBasicMaterial({ color: 0xff6b6b, transparent: true, opacity: 0.6 });
       const trajectoryLine = new THREE.Line(trajectoryGeom, trajectoryMat);
       frustumGroup.add(trajectoryLine);
