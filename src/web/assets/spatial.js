@@ -166,9 +166,9 @@ console.log('✅ 已启用旧变量兼容层');
 /** 批次重叠帧数：批次处理完成后帧计数器的回退值 */
 var SPATIAL_OVERLAP = 100;
 /** 采集帧宽度（像素） */
-var SPATIAL_FRAME_WIDTH = 320;
+var SPATIAL_FRAME_WIDTH = 518;
 /** 采集帧高度（像素） */
-var SPATIAL_FRAME_HEIGHT = 240;
+var SPATIAL_FRAME_HEIGHT = 518;
 /** 目标采集总帧数（用户可通过UI「总帧数」输入框修改） */
 var spatialCaptureTargetFrames = Infinity;
 var spatialKeyframeInterval = 1;  // Default: every frame is a keyframe (same as viser when <= 320 frames)
@@ -2465,7 +2465,7 @@ function captureCurrentFrameData() {
   
   try {
     ctx.drawImage(video, 0, 0, SPATIAL_FRAME_WIDTH, SPATIAL_FRAME_HEIGHT);
-    var dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+    var dataUrl = canvas.toDataURL('image/jpeg', 0.85);
     var base64 = dataUrl.split(',')[1];
     console.log('[Spatial] captureCurrentFrameData: 本地摄像头采集成功, 数据长度=' + base64.length);
     return { image: base64 };
