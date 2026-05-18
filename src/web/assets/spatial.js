@@ -796,33 +796,19 @@ const MAX_FRUSTUMS = 60;
 // ---------- Three.js loader ----------
 
 async function loadThreeJS() {
-  if (typeof window.THREE !== 'undefined') {
-    THREE = window.THREE;
-  } else if (typeof require !== 'undefined') {
-    try {
-      THREE = require('three');
-    } catch (e) {
-      console.error('[Spatial] Failed to load Three.js via require:', e);
-      return false;
-    }
-  }
-  
+  if (THREE) return THREE;
   try {
-    const orbitModule = await import('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/OrbitControls.js');
-    OrbitControls = orbitModule.OrbitControls || window.THREE.OrbitControls;
-  } catch (e) {
-    if (window.THREE && window.THREE.OrbitControls) {
-      OrbitControls = window.THREE.OrbitControls;
-    } else {
-      console.warn('[Spatial] OrbitControls not available');
-    }
+    THREE = await import('three');
+    const { OrbitControls: OC } = await import('three/addons/controls/OrbitControls.js');
+    OrbitControls = OC;
+    const { PLYLoader: PL } = await import('three/addons/loaders/PLYLoader.js');
+    PLYLoader = PL;
+    console.log('[Spatial] Three.js, OrbitControls and PLYLoader loaded successfully');
+    return THREE;
+  } catch (err) {
+    console.error('[Spatial] Failed to load Three.js:', err);
+    throw err;
   }
-  
-  if (typeof PLYLoader === 'undefined' && window.THREE && window.THREE.PLYLoader) {
-    PLYLoader = window.THREE.PLYLoader;
-  }
-  
-  return !!THREE;
 }
 
 // ---------- 3D Scene Setup ----------
@@ -844,11 +830,11 @@ async function init3DScene() {
   const height = container.clientHeight || 600;
 
   // Renderer
-  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+  const canvas = document.getElementById('spatialCanvas');
+  renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: false });
   renderer.setSize(width, height);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setClearColor(0xffffff, 1);
-  container.appendChild(renderer.domElement);
 
   // Scene — no coordinate transform, raw world coordinates (like viser)
   scene = new THREE.Scene();
@@ -880,8 +866,6 @@ async function init3DScene() {
     }
   }).observe(container);
 
-  // Clean up old resize listener
-  window.removeEventListener('resize', onWindowResize);
 
   // Start animation loop
   animate();
