@@ -805,11 +805,11 @@ let frameTime = 0;
 // 帧计数器
 let frameCount = 0;
 // GUI：降采样步长
-let guiDownsample = 3;  // matches viser LivePointCloudViewer default
+let guiDownsample = 10;  // matches live_camera.py --downsample_factor default (10)
 /** GUI: point cloud point size (matches viser default) */
 let guiPointSize = 0.00001;
 /** GUI: confidence threshold for point filtering (same as viser default) */
-let guiConfThreshold = 0.7;
+let guiConfThreshold = 1.5;  // matches stream.py --conf_threshold default (1.5), cleaner than 0.7
 // 统计信息更新回调
 let onStatsUpdate = null;
 
@@ -853,7 +853,7 @@ async function init3DScene() {
 
   // 创建场景并设置背景色
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x1a1a2e);
+  scene.background = new THREE.Color(0xffffff);
 
   const width = container.clientWidth || 800;
   const height = container.clientHeight || 600;
@@ -1043,16 +1043,12 @@ function reset3DCamera() {
 function fitCameraToScene() {
   if (!camera3d || !window.controls) return;
 
-  var center = new THREE.Vector3(sceneCenter[0], sceneCenter[1], sceneCenter[2]);
+  // 场景已通过 group.position 居中到原点，相机也对准原点
   var dist = Math.max(sceneScale * 1.5, 1.0);
 
-  camera3d.position.set(
-    center.x + dist * 0.7,
-    center.y + dist * 0.5,
-    center.z + dist * 0.7
-  );
-  camera3d.lookAt(center);
-  window.controls.target.copy(center);
+  camera3d.position.set(dist * 0.7, dist * 0.5, dist * 0.7);
+  camera3d.lookAt(0, 0, 0);
+  window.controls.target.set(0, 0, 0);
   window.controls.update();
 
   // Dynamically adjust camera near/far based on scene scale
