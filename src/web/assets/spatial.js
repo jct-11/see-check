@@ -139,9 +139,63 @@ const SpatialState = {
   maxPoseStep: 0.1,
 };
 
-// ============== Legacy standalone variables (referenced by code not yet migrated to SpatialState) ==============
-/** @deprecated — migrate to SpatialState.isInferenceStarted */
-var isInferenceStarted = false;
+// ============== Legacy variable compatibility (old code references these) ==============
+Object.defineProperties(window, {
+  spatialIsCapturing: {
+    get: () => SpatialState.isCapturing,
+    set: (val) => SpatialState.isCapturing = val
+  },
+  spatialFrameCounter: {
+    get: () => SpatialState.frameCounter,
+    set: (val) => SpatialState.frameCounter = val
+  },
+  totalFramesCollected: {
+    get: () => SpatialState.totalFramesCollected,
+    set: (val) => SpatialState.totalFramesCollected = val
+  },
+  currentBatchId: {
+    get: () => SpatialState.currentBatchId,
+    set: (val) => SpatialState.currentBatchId = val
+  },
+  isInitialBatch: {
+    get: () => SpatialState.isInitialBatch,
+    set: (val) => SpatialState.isInitialBatch = val
+  },
+  spatialCaptureTimer: {
+    get: () => SpatialState.captureTimer,
+    set: (val) => SpatialState.captureTimer = val
+  },
+  collectedFrames: {
+    get: () => SpatialState.collectedFrames,
+    set: (val) => SpatialState.collectedFrames = val
+  },
+  isBatchProcessing: {
+    get: () => SpatialState.isBatchProcessing,
+    set: (val) => SpatialState.isBatchProcessing = val
+  },
+  spatialVideoStream: {
+    get: () => SpatialState.videoStream,
+    set: (val) => SpatialState.videoStream = val
+  },
+  isUploading: {
+    get: () => SpatialState.isUploading,
+    set: (val) => SpatialState.isUploading = val
+  },
+  isInferenceStarted: {
+    get: () => SpatialState.isInferenceStarted,
+    set: (val) => SpatialState.isInferenceStarted = val
+  },
+  onLogMessage: {
+    get: () => SpatialState.onLogMessage,
+    set: (val) => SpatialState.onLogMessage = val
+  },
+  onStatusUpdate: {
+    get: () => SpatialState.onStatusUpdate,
+    set: (val) => SpatialState.onStatusUpdate = val
+  }
+});
+
+console.log('✅ 已启用旧变量兼容层');
 
 // ============== 全局常量 ==============
 /** 批次重叠帧数：批次处理完成后帧计数器的回退值 */
@@ -152,7 +206,7 @@ var SPATIAL_FRAME_WIDTH = 320;
 var SPATIAL_FRAME_HEIGHT = 240;
 /** 目标采集总帧数（用户可通过UI「总帧数」输入框修改） */
 var spatialCaptureTargetFrames = Infinity;
-var spatialKeyframeInterval = 4;
+var spatialKeyframeInterval = 1;  // Default: every frame is a keyframe (same as viser when <= 320 frames)
 var spatialMaxImages = null;
 /** 当前采集FPS（用户可通过UI「采集FPS」输入框修改） */
 var spatialCaptureFps = 5;
@@ -2686,7 +2740,7 @@ function startSpatialCapture() {
       }
     } else {
       spatialMaxImages = null;
-      spatialKeyframeInterval = 4;
+      spatialKeyframeInterval = 1;  // Default when maxImages not set (match viser)
     }
 
     SpatialApi.setCapturing(true);

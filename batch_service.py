@@ -67,7 +67,11 @@ MODEL_PATH = "/home/sscy/lingbot-map/lingbot-map-main/checkpoints/robbyant/lingb
 IMAGE_SIZE = 518
 PATCH_SIZE = 14
 NUM_SCALE_FRAMES = 8
-KEYFRAME_INTERVAL = 2  # 减小关键帧间隔，增加关键帧密度，减少转弯时的累积误差
+# Keyframe interval: auto-selected based on frame count (same as live_camera.py).
+# <= 320 frames: interval=1 (every frame is a keyframe, best accuracy).
+# > 320 frames: interval=ceil(N/320) to keep KV cache at ~320 keyframes.
+# The frontend can override this via the keyframe_interval parameter.
+KEYFRAME_INTERVAL_DEFAULT = 1
 DTYPE = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else torch.float16
 
 # 全局状态
@@ -78,7 +82,7 @@ model_state = {
     "current_batch_id": None,
     "frame_idx": 0,
     "scale_frames": NUM_SCALE_FRAMES,
-    "keyframe_interval": KEYFRAME_INTERVAL,
+    "keyframe_interval": KEYFRAME_INTERVAL_DEFAULT,
     "max_images": None,
     "known_paths": set(),
     "all_predictions": {
@@ -195,6 +199,7 @@ def load_model():
         img_size=IMAGE_SIZE,
         patch_size=PATCH_SIZE,
         enable_3d_rope=True,
+        enable_point=True,  # Model-direct world_points (end-to-end learned, more accurate than depth unprojection)
         max_frame_num=1024,
         kv_cache_sliding_window=64,
         kv_cache_scale_frames=NUM_SCALE_FRAMES,
@@ -573,7 +578,7 @@ async def start_inference(batch_id: str, body: dict):
         all_paths.extend(glob.glob(str(frames_dir / f"*{ext}")))
     existing_frames = len(sorted(set(all_paths)))
     
-    ki = body.get("keyframe_interval", KEYFRAME_INTERVAL)
+    ki = body.get("keyframe_interval", KEYFRAME_INTERVAL_DEFAULT)
     max_img = body.get("max_images", None)
     
     model_state["current_batch_id"] = batch_id
