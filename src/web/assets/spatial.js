@@ -1,60 +1,118 @@
 // spatial.js - 空间记忆模块合并文件
 // 整合: spatial_api.js, spatial_ui.js, spatial_visualizer.js, spatial_map.js
 
+// ============== 工具函数 ==============
+/**
+ * 将 Base64 编码字符串转换为 Float32Array
+ * @param {string} base64Str - Base64 编码的字符串
+ * @returns {Float32Array} 解码后的 Float32Array
+ */
+function base64ToFloat32Array(base64Str) {
+  if (!base64Str) return new Float32Array(0);
+  
+  // 解码 Base64 为 ArrayBuffer
+  const binaryStr = atob(base64Str);
+  const len = binaryStr.length;
+  const bytes = new Uint8Array(len);
+  
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryStr.charCodeAt(i);
+  }
+  
+  // 转换为 Float32Array
+  return new Float32Array(bytes.buffer);
+}
+
 // ============== 全局常量 ==============
-var SPATIAL_BATCH_SIZE = 200;
+/** 批次重叠帧数：批次处理完成后帧计数器的回退值 */
 var SPATIAL_OVERLAP = 100;
-var SPATIAL_INITIAL_FPS = 10;
-var SPATIAL_STEADY_FPS = 3;
+/** 采集帧宽度（像素） */
 var SPATIAL_FRAME_WIDTH = 320;
+/** 采集帧高度（像素） */
 var SPATIAL_FRAME_HEIGHT = 240;
-var spatialCaptureTargetFrames = 300;    // 可从「采集 FPS」输入框修改
-var spatialCaptureFps = 5;              // 可从「总帧数」输入框修改
+/** 目标采集总帧数（用户可通过UI「总帧数」输入框修改） */
+var spatialCaptureTargetFrames = Infinity;
+var spatialKeyframeInterval = 4;
+var spatialMaxImages = null;
+/** 当前采集FPS（用户可通过UI「采集FPS」输入框修改） */
+var spatialCaptureFps = 5;
 
 // 批次服务配置
-var BATCH_SERVER_URL = 'http://192.168.0.200:8000';  // RTX3090批次服务地址
+/** 批次服务地址（空字符串=走8080代理，避免跨域） */
+var BATCH_SERVER_URL = '';
 
 // ============== 全局状态变量 ==============
+/** 是否正在采集 */
 var spatialIsCapturing = false;
+/** 当前批次已采集的帧数 */
 var spatialFrameCounter = 0;
+/** 累计已采集的总帧数 */
 var totalFramesCollected = 0;
-var currentBatchId = null;  // 改为字符串类型的批次号
+/** 当前批次号（字符串类型） */
+var currentBatchId = null;
+/** 是否为初始批次 */
 var isInitialBatch = true;
+/** 采集定时器（setTimeout返回值） */
 var spatialCaptureTimer = null;
-var wsConnected = false;
+/** 待上传的帧数据队列（base64图像数组） */
 var collectedFrames = [];
+/** 批次是否正在处理中（服务器端推理） */
 var isBatchProcessing = false;
-var spatialCameraMode = 'server';
+/** 本地视频流对象（MediaStream） */
 var spatialVideoStream = null;
+/** 当前视图模式：'3d'（3D视图） */
 var currentSpatialView = '3d';
-var spatialServerPollTimer = null;
-var uploadQueue = [];  // 上传队列
-var isUploading = false;  // 是否正在上传
+/** 是否有帧正在上传 */
+var isUploading = false;
+/** 是否已启动流式推理 */
+var isInferenceStarted = false;
 
 // ============== API 回调函数 ==============
+/** 点云数据更新回调 */
 var onPointCloudUpdate = null;
+/** 日志消息回调 */
 var onLogMessage = null;
+/** 状态更新回调 */
 var onStatusUpdate = null;
-var onWebSocketStatusChange = null;
 
 // ============== 模块导出对象 ==============
+/** API层模块：负责采集、上传、批次处理 */
 window.SpatialApi = {};
+/** 3D可视化模块：负责Three.js场景、点云渲染、相机可视化 */
 window.SpatialVisualizer = {};
-window.SpatialMap = {};
 
 // ============== API 层 (spatial_api.js) ==============
 
+/**
+ * 设置API回调函数
+ * 供外部模块注册事件处理函数
+ * @param {Object} callbacks - 回调函数对象
+ * @param {Function} callbacks.onPointCloudUpdate - 点云数据更新时的回调
+ * @param {Function} callbacks.onLogMessage - 日志消息输出时的回调
+ * @param {Function} callbacks.onStatusUpdate - 采集状态变化时的回调
+ */
 function setSpatialApiCallbacks(callbacks) {
   if (callbacks.onPointCloudUpdate) onPointCloudUpdate = callbacks.onPointCloudUpdate;
   if (callbacks.onLogMessage) onLogMessage = callbacks.onLogMessage;
   if (callbacks.onStatusUpdate) onStatusUpdate = callbacks.onStatusUpdate;
-  if (callbacks.onWebSocketStatusChange) onWebSocketStatusChange = callbacks.onWebSocketStatusChange;
 }
 
+/**
+ * 添加日志消息到浏览器控制台
+ * 日志类型包括：'info'（普通信息）、'ok'（成功，绿色）、'err'（错误，红色）
+ * @param {string} msg - 日志消息内容
+ * @param {string} [type='info'] - 日志类型：'info'|'ok'|'err'
+ */
+/**
+ * 添加日志消息到浏览器控制台
+ * 日志类型包括：'info'（普通信息）、'ok'（成功，绿色）、'err'（错误，红色）
+ * @param {string} msg - 日志消息内容
+ * @param {string} [type='info'] - 日志类型：'info'|'ok'|'err'
+ */
 function addLog(msg, type) {
   const logMsg = msg;
   const logType = type || 'info';
-  
+
   if (logType === 'err') {
     console.error('[Spatial] ' + logMsg);
   } else if (logType === 'ok') {
@@ -62,101 +120,122 @@ function addLog(msg, type) {
   } else {
     console.log('[Spatial] ' + logMsg);
   }
-  
-  const logContainer = document.getElementById('modelingLog');
-  if (logContainer) {
-    const logItem = document.createElement('div');
-    logItem.className = 'log-item ' + logType;
-    
-    const timestamp = new Date().toLocaleTimeString();
-    logItem.innerHTML = `<span class="log-time">${timestamp}</span> ${logMsg}`;
-    
-    logContainer.appendChild(logItem);
-    
-    logContainer.scrollTop = logContainer.scrollHeight;
-    
-    const maxLogs = 50;
-    const logs = logContainer.querySelectorAll('.log-item');
-    if (logs.length > maxLogs) {
-      for (let i = 0; i < logs.length - maxLogs; i++) {
-        logContainer.removeChild(logs[i]);
-      }
-    }
-  }
 }
 
+/**
+ * 更新状态信息
+ * 触发onStatusUpdate回调，通知外部模块状态变化
+ * @param {Object} status - 状态对象（包含frameCount、pointCount等字段）
+ */
+/**
+ * 更新状态信息
+ * 触发onStatusUpdate回调，通知外部模块状态变化
+ * @param {Object} status - 状态对象（包含frameCount、pointCount等字段）
+ */
 function updateStatus(status) {
   if (onStatusUpdate) onStatusUpdate(status);
 }
 
-function notifyWebSocketStatus(isConnected) {
-  wsConnected = isConnected;
-  if (onWebSocketStatusChange) onWebSocketStatusChange(isConnected);
-}
-
+/**
+ * 获取当前采集帧率
+ * @returns {number} 当前FPS值
+ */
 function getCurrentFPS() {
   return spatialCaptureFps;
 }
 
+/**
+ * 计算帧间隔时间
+ * 根据当前FPS计算两帧之间的时间间隔（毫秒）
+ * @returns {number} 帧间隔时间（ms）
+ */
 function getFrameInterval() {
   return 1000 / getCurrentFPS();
 }
 
-function checkRTXServerStatus() {
-  if (isBatchProcessing) {
-    console.log('[Spatial API] 正在批量推理，跳过 RTX3090 状态检查');
-    return;
-  }
-  
-  // 使用批次服务检查
+/**
+ * 初始化连接
+ * 检查批次服务器是否可达，建立与服务器的通信
+ */
+function initConnection() {
+  console.log('[Spatial API] 使用批次服务模式');
   checkBatchServerStatus();
 }
 
-function startRTXStatusCheck() {
-  checkRTXServerStatus();
-  setInterval(checkRTXServerStatus, 10000);
-}
-
-function initWebSocket() {
-  console.log('[Spatial API] 使用批次服务模式');
-  checkRTXServerStatus();
-}
-
+/**
+ * 启动连续采集
+ * 按照设定的FPS持续采集帧数据，通过setTimeout递归调用实现
+ */
 function startContinuousCapture() {
   console.log('[Spatial API] startContinuousCapture: 被调用, spatialIsCapturing=' + spatialIsCapturing);
   
   if (!spatialIsCapturing) return;
 
+  // 首次采集时，初始化批次号和进度条
   if (spatialFrameCounter === 0 && collectedFrames.length === 0) {
     // 生成新的批次号
     currentBatchId = generateBatchId();
     isInitialBatch = true;
     addLog('开始采集 (' + getCurrentFPS() + ' FPS)，批次号: ' + currentBatchId + '，目标 ' + spatialCaptureTargetFrames + ' 帧', 'info');
-    
-    // 显示批次号
-    updateBatchIdDisplay(currentBatchId);
-    
-    // 重置所有进度状态
-    updateStepStatus('stepCapture', 'active');
-    updateStepStatus('stepUpload', 'pending');
-    updateStepStatus('stepProcessing', 'pending');
-    updateStepStatus('stepDownload', 'pending');
-    updateStepStatus('step3D', 'pending');
-    updateProgressDisplay('uploadProgress', '0%');
-    updateProgressDisplay('processProgress', '0%');
-    updateProgressDisplay('downloadProgress', '0%');
+    showCaptureProgress();
   }
 
+  // 采集当前帧
   collectFrame();
 
+  // 递归调度下一帧采集
   if (spatialIsCapturing) {
     spatialCaptureTimer = setTimeout(startContinuousCapture, getFrameInterval());
   }
 }
 
-function collectFrame() {
-  if (!spatialIsCapturing || isBatchProcessing) return;
+/**
+ * 显示采集进度条
+ * 在摄像头画面底部显示进度条
+ */
+function showCaptureProgress() {
+  var bar = document.getElementById('captureProgressBar');
+  if (bar) bar.style.display = 'block';
+  updateCaptureProgress();
+}
 
+/**
+ * 隐藏采集进度条
+ */
+function hideCaptureProgress() {
+  var bar = document.getElementById('captureProgressBar');
+  if (bar) bar.style.display = 'none';
+}
+
+/**
+ * 更新采集进度条
+ * 根据已采集帧数和目标帧数更新进度条宽度和文字
+ */
+function updateCaptureProgress() {
+  var fill = document.getElementById('captureProgressFill');
+  var text = document.getElementById('captureProgressText');
+  if (!fill || !text) return;
+  
+  if (spatialCaptureTargetFrames === Infinity || spatialCaptureTargetFrames <= 0) {
+    fill.style.width = '0%';
+    text.textContent = '已采集 ' + totalFramesCollected + ' 帧';
+  } else {
+    var pct = Math.min(100, Math.round((totalFramesCollected / spatialCaptureTargetFrames) * 100));
+    fill.style.width = pct + '%';
+    text.textContent = totalFramesCollected + ' / ' + spatialCaptureTargetFrames + ' 帧';
+  }
+}
+
+/**
+ * 采集当前帧数据
+ * 调用外部注入的captureCurrentFrame函数获取图像，存入待上传队列
+ */
+async function collectFrame() {
+  // ✅ 流式模式下即使 isBatchProcessing=true 也要继续采集
+  // 只有批量模式才需要停止采集
+  if (!spatialIsCapturing || (isBatchProcessing && !isInferenceStarted)) return;
+
+  // 调用外部设置的帧采集函数
   var frameData = null;
   if (captureCurrentFrame) {
     frameData = captureCurrentFrame();
@@ -168,14 +247,13 @@ function collectFrame() {
 
   console.log('[Spatial API] collectFrame: 收到帧, image.length=' + (frameData.image ? frameData.image.length : 0));
 
+  // 将帧数据加入队列
   collectedFrames.push(frameData.image);
   spatialFrameCounter++;
   totalFramesCollected++;
 
-  // 更新采集进度显示
-  updateProgressDisplay('frameCount', totalFramesCollected + '/' + spatialCaptureTargetFrames);
-  updateStepStatus('stepCapture', 'active');
-  
+  updateCaptureProgress();
+
   updateStatus({
     frameCount: totalFramesCollected,
     totalFrames: totalFramesCollected,
@@ -184,19 +262,26 @@ function collectFrame() {
     batchId: currentBatchId
   });
 
-  // 每50帧上传一次，避免内存占用过大
-  if (collectedFrames.length >= 50) {
-    uploadPendingFrames();
+  // 每10帧上传一次（流式处理模式）
+  if (collectedFrames.length >= 10) {
+    await uploadPendingFrames();  // ✅ 添加 await
+    
+    // 流式处理：第一次上传后启动推理
+    if (!isInferenceStarted && !isBatchProcessing && currentBatchId) {
+      isInferenceStarted = true;
+      addLog('启动流式推理...', 'info');
+      await startStreamingInference(currentBatchId);  // ✅ 添加 await
+    }
   }
 
   // 达到目标帧数后自动停止
   if (totalFramesCollected >= spatialCaptureTargetFrames) {
     console.log('[Spatial API] 达到目标帧数 ' + spatialCaptureTargetFrames + '，自动停止采集');
-    uploadPendingFrames();
+    await uploadPendingFrames();  // ✅ 添加 await
     stopSpatialCapture();
   }
 
-  // 达到目标帧数后提交处理
+  // 达到目标帧数后提交处理（兼容批量模式）
   if (totalFramesCollected >= spatialCaptureTargetFrames && !isBatchProcessing) {
     submitBatch();
   }
@@ -204,14 +289,76 @@ function collectFrame() {
 
 /**
  * 上传待处理的帧
+ * 从collectedFrames队列中取出最多50帧上传到服务器
+ * @returns {Promise<void>}
  */
 async function uploadPendingFrames() {
   if (isUploading || collectedFrames.length === 0 || !currentBatchId) return;
   
+  // 每次最多上传50帧
   const framesToUpload = collectedFrames.splice(0, 50);
   await uploadFramesToBatchServer(currentBatchId, framesToUpload);
 }
 
+/**
+ * 启动流式推理
+ * 向服务器发送POST请求启动3D重建推理，并启动点云逐帧拉取
+ * @param {string} batchId - 批次号
+ * @returns {Promise<void>}
+ */
+async function startStreamingInference(batchId) {
+  if (!batchId) return;
+  
+  isBatchProcessing = true;
+
+  // ✅ 在发送请求前重新计算关键帧间隔，确保传递正确的值到后端
+  let currentKeyframeInterval = spatialKeyframeInterval;
+  if (spatialMaxImages !== null) {
+    if (spatialMaxImages > 320) {
+      currentKeyframeInterval = Math.floor((spatialMaxImages + 319) / 320);
+    } else {
+      currentKeyframeInterval = 1;
+    }
+  }
+
+  try {
+    // 向服务器发送推理启动请求
+    const response = await fetch(`${BATCH_SERVER_URL}/batch/${batchId}/start_inference`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batch_id: batchId, confidence_threshold: 0.1, keyframe_interval: currentKeyframeInterval, max_images: spatialMaxImages })
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      addLog('启动推理失败: ' + errorText, 'err');
+      isBatchProcessing = false;
+      return;
+    }
+    
+    const result = await response.json();
+    if (result.success) {
+      addLog('推理已启动', 'ok');
+      
+      // 启动点云逐帧拉取（使用3D可视化模块的流式加载）
+      if (typeof SpatialVisualizer !== 'undefined' && SpatialVisualizer.startFrameByFrameFetch) {
+        SpatialVisualizer.startFrameByFrameFetch(batchId, null);
+      }
+    } else {
+      addLog('启动推理失败: ' + (result.error || 'unknown'), 'err');
+      isBatchProcessing = false;
+    }
+  } catch (err) {
+    addLog('启动推理请求失败: ' + err.message, 'err');
+    console.error('启动推理详细错误:', err);
+    isBatchProcessing = false;
+  }
+}
+
+/**
+ * 提交批次进行处理
+ * 等待上传完成后，调用processBatch()启动服务器端点云重建
+ */
 function submitBatch() {
   if (isBatchProcessing || totalFramesCollected < spatialCaptureTargetFrames || !currentBatchId) {
     console.log('[Spatial API] submitBatch: 跳过, isBatchProcessing=' + isBatchProcessing + ', totalFramesCollected=' + totalFramesCollected);
@@ -228,7 +375,7 @@ function submitBatch() {
   }
   spatialIsCapturing = false;
   
-  // 等待之前的上传完成后再上传剩余帧并提交
+  // 等待上传完成后上传剩余帧并提交处理
   waitForUploadReady(function() {
     if (collectedFrames.length > 0) {
       uploadFramesToBatchServer(currentBatchId, collectedFrames).then(() => {
@@ -241,76 +388,37 @@ function submitBatch() {
   });
 }
 
-function waitForUploadReady(callback) {
-  if (!isUploading) { callback(); return; }
-  var checkInterval = setInterval(() => {
-    if (!isUploading) {
-      clearInterval(checkInterval);
-      callback();
-    }
-  }, 100);
-}
-
 /**
- * 处理批次
+ * 设置帧采集函数
+ * 由外部模块注入实际采集帧的逻辑（通常是从摄像头或视频流获取图像）
+ * @param {Function} func - 帧采集函数，返回包含image字段（base64编码）的对象
  */
-async function processBatch() {
-  if (!currentBatchId) return;
-
-  addLog('提交批次 ' + currentBatchId + ' 到RTX3090进行批量推理...', 'info');
-  updateStatus({ processing: true, progress: '推理中...' });
-  
-  updateStepStatus('stepCapture', 'done');
-  updateStepStatus('stepProcessing', 'active');
-  updateStepStatus('step3D', 'pending');
-
-  try {
-    const result = await processBatchInServer(currentBatchId);
-    
-    if (result.success) {
-      updateStatus({
-        processing: false,
-        progress: '100%',
-        pointCount: result.total_points || 0,
-        frameCount: spatialFrameCounter,
-        totalFrames: totalFramesCollected
-      });
-
-      updateStepStatus('stepCapture', 'done');
-      updateStepStatus('stepProcessing', 'done');
-      updateStepStatus('step3D', 'done');
-
-      spatialFrameCounter = SPATIAL_OVERLAP;
-      isInitialBatch = false;
-    } else {
-      addLog('批量推理失败: ' + (result.error || 'unknown'), 'err');
-      updateStatus({ processing: false });
-    }
-  } catch (err) {
-    addLog('批量推理请求失败: ' + err.message, 'err');
-    updateStatus({ processing: false });
-  }
-}
-
-var captureCurrentFrame = null;
 function setCaptureFrameFunc(func) {
   captureCurrentFrame = func;
 }
 
+/**
+ * 获取当前采集状态
+ * 返回包含所有采集相关状态的快照对象
+ * @returns {Object} 采集状态对象
+ */
 function getSpatialCaptureState() {
   return {
     isCapturing: spatialIsCapturing,
     frameCounter: spatialFrameCounter,
     totalFrames: totalFramesCollected,
     currentBatchId: currentBatchId,
-    cameraMode: spatialCameraMode,
-    wsConnected: wsConnected,
     collectedFrames: collectedFrames.length,
     isBatchProcessing: isBatchProcessing,
     isUploading: isUploading
   };
 }
 
+/**
+ * 设置采集状态
+ * 控制采集开始/停止，停止时自动清除定时器
+ * @param {boolean} value - true表示开始采集，false表示停止采集
+ */
 function setSpatialCapturing(value) {
   spatialIsCapturing = value;
   if (!value) {
@@ -318,9 +426,109 @@ function setSpatialCapturing(value) {
       clearTimeout(spatialCaptureTimer);
       spatialCaptureTimer = null;
     }
+    
+    // ✅ 停止采集时上传剩余帧并结束推理
+    if (currentBatchId) {
+      uploadPendingFrames();
+      sendFinishInference(currentBatchId);
+    }
   }
 }
 
+/**
+ * 发送结束推理请求
+ * 通知服务器完成当前批次的3D重建推理，服务器将释放计算资源
+ * @param {string} batchId - 批次号
+ * @returns {Promise<void>}
+ */
+async function sendFinishInference(batchId) {
+  if (!batchId) return;
+  
+  try {
+    const response = await fetch(`${BATCH_SERVER_URL}/batch/${batchId}/finish_inference`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batch_id: batchId })
+    });
+    
+    if (response.ok) {
+      const result = await response.json();
+      if (result.success) {
+        addLog('推理已结束', 'ok');
+      } else {
+        addLog('结束推理失败: ' + (result.error || 'unknown'), 'err');
+      }
+    } else {
+      const errorText = await response.text();
+      addLog('结束推理请求失败: ' + errorText, 'err');
+    }
+  } catch (err) {
+    addLog('结束推理请求异常: ' + err.message, 'err');
+    console.error('结束推理详细错误:', err);
+  }
+}
+
+/**
+ * 获取单帧点云和相机位姿并渲染
+ * 从服务器获取指定帧的点云数据和相机位姿，更新3D场景显示
+ * @param {string} batchId - 批次号
+ * @param {number} frameIndex - 帧索引
+ * @returns {Promise<void>}
+ */
+async function fetchAndRenderFrame(batchId, frameIndex) {
+  if (!batchId || frameIndex === undefined) return;
+  
+  try {
+    // ✅ 获取点云数据
+    const pointCloudResponse = await fetch(`${BATCH_SERVER_URL}/batch/${batchId}/frame/${frameIndex}/point_cloud`);
+    
+    if (!pointCloudResponse.ok) {
+      console.warn(`[Spatial] 帧 ${frameIndex} 点云获取失败: ${pointCloudResponse.status}`);
+      return;
+    }
+    
+    const pointCloudData = await pointCloudResponse.json();
+    
+    if (!pointCloudData.success || !pointCloudData.point_cloud) {
+      console.warn(`[Spatial] 帧 ${frameIndex} 无点云数据`);
+      return;
+    }
+    
+    const { points, colors, confs } = pointCloudData.point_cloud;
+    
+    // ✅ 获取相机位姿
+    const cameraResponse = await fetch(`${BATCH_SERVER_URL}/batch/${batchId}/frame/${frameIndex}/camera`);
+    
+    if (cameraResponse.ok) {
+      const cameraData = await cameraResponse.json();
+      if (cameraData.success && cameraData.camera) {
+        if (!window.camerasData) window.camerasData = [];
+        window.camerasData[frameIndex] = cameraData.camera;
+        
+        // ✅ 更新相机轨迹线
+        if (typeof updateTrajectoryLine === 'function') {
+          updateTrajectoryLine();
+        }
+      }
+    }
+    
+    // ✅ 渲染点云
+    if (typeof SpatialVisualizer !== 'undefined' && SpatialVisualizer.addFramePointCloud) {
+      SpatialVisualizer.addFramePointCloud(points, colors, confs, frameIndex);
+    }
+    
+    addLog(`帧 ${frameIndex} 点云渲染完成，${points.length / 3} 点`, 'ok');
+    
+  } catch (err) {
+    console.error(`[Spatial] 帧 ${frameIndex} 获取失败:`, err.message);
+    addLog(`帧 ${frameIndex} 获取失败: ${err.message}`, 'err');
+  }
+}
+
+/**
+ * 重置采集状态
+ * 清除所有计数器、队列和批次信息，恢复初始状态
+ */
 function resetSpatialState() {
   spatialFrameCounter = 0;
   totalFramesCollected = 0;
@@ -336,6 +544,8 @@ function resetSpatialState() {
 
 /**
  * 生成唯一批次号
+ * 格式：batch_YYYYMMDD_HHMMSS（基于当前时间戳）
+ * @returns {string} 批次号字符串
  */
 function generateBatchId() {
   const now = new Date();
@@ -350,6 +560,8 @@ function generateBatchId() {
 
 /**
  * 检查批次服务状态
+ * 通过HTTP GET请求验证服务器是否可达
+ * @returns {Promise<boolean>} 服务是否可达
  */
 async function checkBatchServerStatus() {
   try {
@@ -359,22 +571,23 @@ async function checkBatchServerStatus() {
     });
     if (response.ok) {
       addLog('批次服务已连接', 'ok');
-      notifyWebSocketStatus(true);
       return true;
     } else {
       console.warn('[Spatial API] 批次服务返回错误状态:', response.status);
-      notifyWebSocketStatus(false);
       return false;
     }
   } catch (err) {
     console.warn('[Spatial API] 批次服务不可达:', err.message);
-    notifyWebSocketStatus(false);
     return false;
   }
 }
 
 /**
  * 上传帧到批次服务
+ * 将采集的图像帧批量上传到RTX3090服务器进行3D重建
+ * @param {string} batchId - 批次号
+ * @param {string[]} frames - base64编码的图像数组
+ * @returns {Promise<Object>} 上传结果 {success, totalUploaded, message}
  */
 async function uploadFramesToBatchServer(batchId, frames) {
   if (frames.length === 0) return { success: false };
@@ -384,7 +597,8 @@ async function uploadFramesToBatchServer(batchId, frames) {
   
   frames.forEach((frame, index) => {
     const blob = base64ToBlob(frame, 'image/jpeg');
-    formData.append('files', blob, `frame_${spatialFrameCounter - frames.length + index}.jpg`);
+    const frameNum = spatialFrameCounter - frames.length + index;
+    formData.append('files', blob, `frame_${String(frameNum).padStart(3, '0')}.jpg`);
   });
   
   try {
@@ -412,6 +626,9 @@ async function uploadFramesToBatchServer(batchId, frames) {
 
 /**
  * 处理批次生成点云
+ * 向服务器发送处理请求，启动3D重建流程，轮询日志并等待完成
+ * @param {string} batchId - 批次号
+ * @returns {Promise<Object>} 处理结果 {success, total_points, num_frames}
  */
 async function processBatchInServer(batchId) {
   isBatchProcessing = true;
@@ -523,6 +740,8 @@ async function processBatchInServer(batchId) {
 
 /**
  * 获取批次状态
+ * @param {string} batchId - 批次号
+ * @returns {Promise<Object|null>} 批次状态信息
  */
 async function getBatchStatus(batchId) {
   try {
@@ -535,7 +754,9 @@ async function getBatchStatus(batchId) {
 }
 
 /**
- * 获取批次点云
+ * 获取批次点云数据
+ * @param {string} batchId - 批次号
+ * @returns {Promise<Object|null>} 点云数据（包含points、colors等）
  */
 async function getBatchPointCloud(batchId) {
   try {
@@ -560,26 +781,16 @@ function base64ToBlob(base64, mimeType) {
   return new Blob([ab], { type: mimeType });
 }
 
-function isWsConnected() {
-  return wsConnected;
-}
-
-function disconnectWebSocket() {
-  wsConnected = false;
-}
-
 // ============== API 模块导出 ==============
 window.SpatialApi = {
-  init: initWebSocket,
+  init: initConnection,
   setCaptureFrameFunc: setCaptureFrameFunc,
   setCallbacks: setSpatialApiCallbacks,
   getState: getSpatialCaptureState,
   setCapturing: setSpatialCapturing,
   reset: resetSpatialState,
-  isConnected: isWsConnected,
-  disconnect: disconnectWebSocket,
-  checkServerStatus: checkRTXServerStatus,
-  startStatusCheck: startRTXStatusCheck,
+  checkServerStatus: checkBatchServerStatus,
+  startStatusCheck: function() { /* 状态检查方法 - 保持向后兼容 */ },
   startContinuousCapture: startContinuousCapture,
   // 批次服务相关
   generateBatchId: generateBatchId,
@@ -591,30 +802,56 @@ window.SpatialApi = {
 };
 
 // ============== 3D 可视化层 (spatial_visualizer.js) ==============
+// 负责：Three.js场景初始化、点云渲染、相机位姿可视化、轨迹展示
 
+// Three.js 核心库
 let THREE = null;
+// 轨道控制器（鼠标旋转/平移/缩放）
 let OrbitControls = null;
+// PLY点云加载器
 let PLYLoader = null;
+// Three.js场景对象
 let scene = null;
+// 3D相机对象
 let camera3d = null;
+// WebGL渲染器
 let renderer = null;
+// 动画帧ID（用于cancelAnimationFrame）
 let animationId = null;
+// 点云渲染对象
 let pointCloud = null;
+// 点云组（包含所有点云）
 let cloudGroup = null;
+// 相机视锥体组
 let frustumGroup = null;
+// 轨迹管状几何体
 let trajectoryTube = null;
+// 相机视锥体列表
 let cameraFrustums = [];
+// 统计信息：FPS、顶点数
 let visualizerStats = { fps: 0, vertices: 0 };
+// 帧时间计数器
 let frameTime = 0;
+// 帧计数器
 let frameCount = 0;
+// GUI：点云大小（与 live_camera.py 一致）
 let guiPointSize = 0.001;
+// GUI：是否显示相机
 let guiShowCamera = true;
+// GUI：相机视锥体大小
 let guiCamSize = 0.05;
+// 统计信息更新回调
 let onStatsUpdate = null;
 
+/**
+ * 动态加载Three.js库
+ * 使用import()动态导入，避免阻塞页面加载
+ * @returns {Promise<typeof THREE>} Three.js库对象
+ */
 async function loadThreeJS() {
   if (THREE) return THREE;
   try {
+    // 动态导入Three.js核心库和插件
     THREE = await import('three');
     const { OrbitControls: OC } = await import('three/addons/controls/OrbitControls.js');
     OrbitControls = OC;
@@ -628,6 +865,11 @@ async function loadThreeJS() {
   }
 }
 
+/**
+ * 初始化3D场景
+ * 创建Three.js场景、相机、渲染器、网格辅助线、坐标轴等
+ * @returns {Promise<void>}
+ */
 async function init3DScene() {
   if (!THREE) await loadThreeJS();
 
@@ -639,8 +881,9 @@ async function init3DScene() {
     return;
   }
 
+  // 创建场景并设置背景色
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0a0a0f);
+  scene.background = new THREE.Color(0xd0d0d0);
 
   // 延迟确保DOM完全渲染后再获取尺寸
   await new Promise(resolve => setTimeout(resolve, 100));
@@ -654,22 +897,28 @@ async function init3DScene() {
   canvas.width = width;
   canvas.height = height;
   
+  // 创建透视相机
   camera3d = new THREE.PerspectiveCamera(60, width / height, 0.001, 10000);
   camera3d.position.set(0, 0, 5);
   camera3d.lookAt(0, 0, 0);
   camera3d.up.set(0, 1, 0);
 
+  // 创建WebGL渲染器
   renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: false });
   renderer.setSize(width, height);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-  const gridHelper = new THREE.GridHelper(20, 20, 0x333333, 0x222222);
+  // 添加网格辅助线
+  const gridHelper = new THREE.GridHelper(20, 20, 0xaaaaaa, 0xcccccc);
   scene.add(gridHelper);
 
-  const axesHelper = new THREE.AxesHelper(1);
-  scene.add(axesHelper);
+  // 添加世界坐标轴（Viser 风格：红X、绿Y、蓝Z）
+  const worldAxes = new THREE.AxesHelper(1.0);
+  worldAxes.material.linewidth = 3;
+  scene.add(worldAxes);
 
+  // 创建点云几何体和材质
   const pointCloudGeometry = new THREE.BufferGeometry();
   const pointCloudMaterial = new THREE.PointsMaterial({
     size: 0.001,
@@ -683,6 +932,7 @@ async function init3DScene() {
   pointCloud = new THREE.Points(pointCloudGeometry, pointCloudMaterial);
   window.pointCloud = pointCloud;
 
+  // 创建点云组和相机视锥体组
   cloudGroup = new THREE.Group();
   frustumGroup = new THREE.Group();
   cloudGroup.scale.set(-1, -1, 1);
@@ -691,6 +941,7 @@ async function init3DScene() {
   scene.add(cloudGroup);
   scene.add(frustumGroup);
 
+  // 创建轨道控制器（鼠标交互）
   window.controls = new OrbitControls(camera3d, renderer.domElement);
   window.controls.enableDamping = true;
   window.controls.dampingFactor = 0.08;
@@ -698,9 +949,11 @@ async function init3DScene() {
   window.controls.maxDistance = 5000;
   window.controls.target.set(0, 0, 0);
 
+  // 启动动画循环
   animate();
   window.addEventListener('resize', onWindowResize);
 
+  // 延迟触发一次resize确保尺寸正确
   setTimeout(() => {
     onWindowResize();
   }, 100);
@@ -708,6 +961,10 @@ async function init3DScene() {
   console.log('[Spatial Visualizer] 3D scene initialized with size:', width, 'x', height);
 }
 
+/**
+ * 窗口大小变化处理
+ * 更新相机宽高比和渲染器尺寸
+ */
 function onWindowResize() {
   const container = document.getElementById('spatialCanvasContainer');
   const canvas = document.getElementById('spatialCanvas');
@@ -770,9 +1027,24 @@ function animate() {
     window.controls.update();
   }
 
+  if (cameraFollowEnabled && currentCameraTargetPos && currentCameraLookAt) {
+    camera3d.position.lerp(currentCameraTargetPos, cameraFollowSmoothFactor);
+    window.controls.target.lerp(currentCameraLookAt, cameraFollowSmoothFactor);
+  }
+
   renderer.render(scene, camera3d);
 }
 
+/**
+ * 更新3D场景数据
+ * 接收点云数据和相机位姿，更新Three.js场景中的点云渲染和相机可视化
+ * @param {Object} data - 场景数据
+ * @param {number[]|Float32Array} data.points - 点云坐标（扁平数组或嵌套数组）
+ * @param {number[]|Float32Array} data.colors - 点云颜色（0-1范围RGB）
+ * @param {Object[]} data.cameraPoses - 相机位姿数组
+ * @param {number[]} data.sceneCenter - 场景中心坐标
+ * @param {string} data.batchId - 批次号
+ */
 function updateScene(data) {
   if (!THREE || !scene || !pointCloud) {
     console.error('[Spatial Visualizer] Scene not initialized properly');
@@ -780,7 +1052,7 @@ function updateScene(data) {
     return;
   }
 
-  const { points, colors, cameraPoses, sceneCenter, batchId } = data;
+  const { points, colors, cameraPoses, sceneCenter: sceneCenterFromData, batchId } = data;
 
   console.log('[Spatial Visualizer] ========== updateScene called ==========');
   console.log('[Spatial Visualizer] points type:', typeof points, 'isArray:', Array.isArray(points));
@@ -815,9 +1087,30 @@ function updateScene(data) {
   
   let positions;
   if (flatPoints instanceof Float32Array) {
-    positions = flatPoints;
+    positions = new Float32Array(flatPoints);
   } else {
     positions = new Float32Array(flatPoints);
+  }
+
+  // Recenter point cloud to scene center (like Viser does)
+  let recenterX = 0, recenterY = 0, recenterZ = 0;
+  if (sceneCenterFromData && sceneCenterFromData.length === 3) {
+    recenterX = sceneCenterFromData[0];
+    recenterY = sceneCenterFromData[1];
+    recenterZ = sceneCenterFromData[2];
+  } else if (sceneCenter && sceneCenter.length === 3) {
+    recenterX = sceneCenter[0];
+    recenterY = sceneCenter[1];
+    recenterZ = sceneCenter[2];
+  }
+  
+  if (recenterX !== 0 || recenterY !== 0 || recenterZ !== 0) {
+    for (let i = 0; i < numPoints; i++) {
+      positions[i * 3]     -= recenterX;
+      positions[i * 3 + 1] -= recenterY;
+      positions[i * 3 + 2] -= recenterZ;
+    }
+    addLog('点云已重新居中到场景中心', 'ok');
   }
 
   console.log('[Spatial Visualizer] Positions array created, length:', positions.length);
@@ -879,7 +1172,7 @@ function updateScene(data) {
   console.log('[Spatial Visualizer] Size:', size);
   console.log('[Spatial Visualizer] Max dimension:', maxDim);
 
-  const autoPointSize = Math.max(0.01, maxDim * 0.005);
+  const autoPointSize = Math.max(0.001, maxDim * 0.005);
   const finalPointSize = guiPointSize > 0 ? guiPointSize : autoPointSize;
   
   console.log('[Spatial Visualizer] Point size:', finalPointSize);
@@ -995,96 +1288,89 @@ function updateCameraFrustums(cameraPoses) {
     const trajectoryPoints = [];
     cameraPoses.forEach(pose => {
       const pos = pose.position;
-      trajectoryPoints.push(new THREE.Vector3(pos[0], pos[1], pos[2]));
+      trajectoryPoints.push(new THREE.Vector3(-pos[0], -pos[1], pos[2]));
     });
 
-    // 创建平滑的轨迹曲线
     const curve = new THREE.CatmullRomCurve3(trajectoryPoints);
     const curvePoints = curve.getPoints(cameraPoses.length * 2);
-    const trajectoryVerts = new Float32Array(curvePoints.length * 3);
-    
-    for (let i = 0; i < curvePoints.length; i++) {
-      trajectoryVerts[i * 3] = curvePoints[i].x;
-      trajectoryVerts[i * 3 + 1] = curvePoints[i].y;
-      trajectoryVerts[i * 3 + 2] = curvePoints[i].z;
-    }
-
-    const trajectoryGeom = new THREE.BufferGeometry();
-    trajectoryGeom.setAttribute('position', new THREE.BufferAttribute(trajectoryVerts, 3));
+    const trajectoryGeom = new THREE.BufferGeometry().setFromPoints(curvePoints);
     const trajectoryMat = new THREE.LineBasicMaterial({ 
       color: 0xff6b6b, 
       transparent: true, 
-      opacity: 0.8,
-      linewidth: 2 
+      opacity: 0.6
     });
     const trajectoryLine = new THREE.Line(trajectoryGeom, trajectoryMat);
     frustumGroup.add(trajectoryLine);
     cameraFrustums.push(trajectoryLine);
   }
 
-  const step = Math.max(1, Math.floor(cameraPoses.length / 30));
+  const step = Math.max(1, Math.floor(cameraPoses.length / 60));
 
   cameraPoses.forEach((pose, index) => {
     if (index % step !== 0 && index !== cameraPoses.length - 1) return;
 
     const pos = pose.position;
-    const R = pose.R;
-    const focal = pose.focal;
-    const pp = pose.pp;
+    const camPos = new THREE.Vector3(-pos[0], -pos[1], pos[2]);
 
-    const hue = (index / cameraPoses.length) * 0.8 + 0.15;
-    const frustumColor = new THREE.Color().setHSL(hue, 0.8, 0.6);
+    // 如果有旋转矩阵，渲染完整坐标系（翻转X/Y匹配场景）
+    if (pose.rotation) {
+      const R = pose.rotation;
+      const xAxis = new THREE.Vector3(-R[0][0], -R[1][0], R[2][0]);
+      const yAxis = new THREE.Vector3(-R[0][1], -R[1][1], R[2][1]);
+      const zAxis = new THREE.Vector3(-R[0][2], -R[1][2], R[2][2]);
 
-    const markerGeom = new THREE.SphereGeometry(guiCamSize * 0.3, 12, 12);
-    const markerMat = new THREE.MeshBasicMaterial({ color: frustumColor, transparent: true, opacity: 0.9 });
-    const marker = new THREE.Mesh(markerGeom, markerMat);
-    marker.position.set(pos[0], pos[1], pos[2]);
-    frustumGroup.add(marker);
-    cameraFrustums.push(marker);
+      const axisLen = guiCamSize * 2;
+      const axisRadius = guiCamSize * 0.08;
 
-    if (R && focal && pp) {
-      const frustumScale = guiCamSize;
-      const fx = focal;
-      const fy = focal;
-      const cx = pp[0];
-      const cy = pp[1];
-      const W = 640;
-      const H = 480;
-      const s = Math.max(frustumScale * 5, 0.5);
+      // X 轴（红色）
+      const xGeom = new THREE.CylinderGeometry(axisRadius, axisRadius, axisLen, 8);
+      xGeom.translate(0, axisLen / 2, 0);
+      xGeom.rotateZ(-Math.PI / 2);
+      const xMat = new THREE.MeshBasicMaterial({ color: 0xff3333, transparent: true, opacity: 0.9 });
+      const xAxisMesh = new THREE.Mesh(xGeom, xMat);
+      xAxisMesh.position.copy(camPos);
+      xAxisMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), xAxis);
+      frustumGroup.add(xAxisMesh);
+      cameraFrustums.push(xAxisMesh);
 
-      // 针孔相机投影（与 see/ 完全一致）
-      const cornersCam = [
-        new THREE.Vector3((-cx) * s / fx, (-cy) * s / fy, s),
-        new THREE.Vector3((W - cx) * s / fx, (-cy) * s / fy, s),
-        new THREE.Vector3((W - cx) * s / fx, (H - cy) * s / fy, s),
-        new THREE.Vector3((-cx) * s / fx, (H - cy) * s / fy, s),
-      ];
+      // Y 轴（绿色）
+      const yGeom = new THREE.CylinderGeometry(axisRadius, axisRadius, axisLen, 8);
+      yGeom.translate(0, axisLen / 2, 0);
+      const yMat = new THREE.MeshBasicMaterial({ color: 0x33ff33, transparent: true, opacity: 0.9 });
+      const yAxisMesh = new THREE.Mesh(yGeom, yMat);
+      yAxisMesh.position.copy(camPos);
+      yAxisMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), yAxis);
+      frustumGroup.add(yAxisMesh);
+      cameraFrustums.push(yAxisMesh);
 
-      // 变换到世界坐标
-      const rotMatrix3 = new THREE.Matrix3().set(
-        R[0][0], R[0][1], R[0][2],
-        R[1][0], R[1][1], R[1][2],
-        R[2][0], R[2][1], R[2][2]
-      );
-      const posVec = new THREE.Vector3(pos[0], pos[1], pos[2]);
-      const cornersWorld = cornersCam.map(c => c.applyMatrix3(rotMatrix3).add(posVec));
+      // Z 轴（蓝色）
+      const zGeom = new THREE.CylinderGeometry(axisRadius, axisRadius, axisLen, 8);
+      zGeom.translate(0, axisLen / 2, 0);
+      zGeom.rotateX(Math.PI / 2);
+      const zMat = new THREE.MeshBasicMaterial({ color: 0x3366ff, transparent: true, opacity: 0.9 });
+      const zAxisMesh = new THREE.Mesh(zGeom, zMat);
+      zAxisMesh.position.copy(camPos);
+      zAxisMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), zAxis);
+      frustumGroup.add(zAxisMesh);
+      cameraFrustums.push(zAxisMesh);
 
-      // 8条边
-      const edges = [
-        [posVec, cornersWorld[0]], [posVec, cornersWorld[1]], [posVec, cornersWorld[2]], [posVec, cornersWorld[3]],
-        [cornersWorld[0], cornersWorld[1]], [cornersWorld[1], cornersWorld[2]],
-        [cornersWorld[2], cornersWorld[3]], [cornersWorld[3], cornersWorld[0]],
-      ];
-
-      const points = [];
-      edges.forEach(([a, b]) => { points.push(a, b); });
-      const frustumGeom = new THREE.BufferGeometry().setFromPoints(points);
-      const frustumMat = new THREE.LineBasicMaterial({ color: frustumColor, transparent: true, opacity: 0.7 });
-      const frustumLines = new THREE.LineSegments(frustumGeom, frustumMat);
-      frustumLines.userData = { frameIdx: index, cameraPos: posVec.clone() };
-
-      frustumGroup.add(frustumLines);
-      cameraFrustums.push(frustumLines);
+      // 相机中心点
+      const centerGeom = new THREE.SphereGeometry(guiCamSize * 0.15, 8, 8);
+      const centerMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
+      const centerMesh = new THREE.Mesh(centerGeom, centerMat);
+      centerMesh.position.copy(camPos);
+      frustumGroup.add(centerMesh);
+      cameraFrustums.push(centerMesh);
+    } else {
+      // 没有旋转数据时，只显示位置标记（兼容旧数据）
+      const hue = (index / cameraPoses.length) * 0.8 + 0.15;
+      const markerColor = new THREE.Color().setHSL(hue, 0.8, 0.6);
+      const markerGeom = new THREE.SphereGeometry(guiCamSize * 0.3, 12, 12);
+      const markerMat = new THREE.MeshBasicMaterial({ color: markerColor, transparent: true, opacity: 0.9 });
+      const marker = new THREE.Mesh(markerGeom, markerMat);
+      marker.position.copy(camPos);
+      frustumGroup.add(marker);
+      cameraFrustums.push(marker);
     }
   });
 }
@@ -1156,13 +1442,30 @@ function setViewToFirstCamera() {
 }
 
 function togglePointCloud() {
+  // 单一点云对象模式
+  if (mergedPointCloud) {
+    mergedPointCloud.visible = !mergedPointCloud.visible;
+    const btn = document.getElementById('togglePointCloudBtn');
+    if (btn) btn.textContent = mergedPointCloud.visible ? '☁️ 点云' : '☁️ 点云(隐藏)';
+    return;
+  }
+  
+  // 兼容旧的独立对象逻辑
+  Object.keys(framePointCloudObjects).forEach(function(key) {
+    var obj = framePointCloudObjects[key];
+    obj.visible = !obj.visible;
+  });
   if (pointCloud) {
     pointCloud.visible = !pointCloud.visible;
-    const btn = document.getElementById('togglePointCloudBtn');
-    if (btn) btn.textContent = pointCloud.visible ? '☁️ 点云' : '☁️ 点云(隐藏)';
   }
+  const btn = document.getElementById('togglePointCloudBtn');
+  if (btn) btn.textContent = pointCloud ? (pointCloud.visible ? '☁️ 点云' : '☁️ 点云(隐藏)') : '☁️ 点云';
 }
 
+/**
+ * 切换轨迹线显示
+ * 连接所有相机位置形成移动轨迹
+ */
 function toggleTrajectory() {
   if (trajectoryTube) {
     trajectoryTube.visible = !trajectoryTube.visible;
@@ -1171,34 +1474,76 @@ function toggleTrajectory() {
   }
 }
 
+/**
+ * 设置可视化器回调函数
+ * @param {Object} callbacks - 回调函数对象
+ * @param {Function} callbacks.onStatsUpdate - 统计信息更新回调（FPS、顶点数）
+ */
 function setVisualizerCallbacks(callbacks) {
   if (callbacks.onStatsUpdate) onStatsUpdate = callbacks.onStatsUpdate;
 }
 
+/**
+ * 设置点云大小
+ * @param {number} value - 点云渲染尺寸
+ */
 function setGuiPointSize(value) {
   guiPointSize = parseFloat(value);
+  // 更新单一点云对象的点大小
+  if (mergedPointCloud) {
+    mergedPointCloud.material.size = guiPointSize;
+  }
 }
 
+/**
+ * 设置是否显示相机视锥体
+ * @param {boolean} value - 是否显示
+ */
 function setGuiShowCamera(value) {
   guiShowCamera = value;
 }
 
+/**
+ * 设置相机视锥体大小
+ * @param {number} value - 视锥体尺寸
+ */
+/**
+ * 设置相机视锥体大小
+ * @param {number} value - 视锥体尺寸
+ */
 function setGuiCamSize(value) {
   guiCamSize = parseFloat(value);
 }
 
+/**
+ * 获取WebGL渲染器
+ * @returns {THREE.WebGLRenderer} 渲染器对象
+ */
 function getRenderer() {
   return renderer;
 }
 
+/**
+ * 获取Three.js场景
+ * @returns {THREE.Scene} 场景对象
+ */
 function getScene() {
   return scene;
 }
 
+/**
+ * 获取3D相机
+ * @returns {THREE.PerspectiveCamera} 相机对象
+ */
 function getCamera() {
   return camera3d;
 }
 
+/**
+ * 获取当前场景数据（点云+相机位姿）
+ * 用于导出或其他模块访问
+ * @returns {Object} 包含points、colors、cameraPoses的对象
+ */
 function getCurrentSceneData() {
   var data = {
     points: [],
@@ -1235,60 +1580,111 @@ function getCurrentSceneData() {
 }
 
 // ============== 3D 可视化模块导出 ==============
+/** 3D可视化模块对外暴露的所有接口 */
 window.SpatialVisualizer = {
-  init: init3DScene,
-  updateScene: updateScene,
-  resetCamera: reset3DCamera,
-  setViewDirection: setViewDirection,
-  setViewToFirstCamera: setViewToFirstCamera,
-  togglePointCloud: togglePointCloud,
-  toggleTrajectory: toggleTrajectory,
-  setCallbacks: setVisualizerCallbacks,
-  setPointSize: setGuiPointSize,
-  setShowCamera: setGuiShowCamera,
-  setCamSize: setGuiCamSize,
-  getRenderer: getRenderer,
-  getScene: getScene,
-  getCamera: getCamera,
-  getCurrentSceneData: getCurrentSceneData,
-  updatePointSize: updateVisualizerPointSize,
-  toggleCameraVisualization: toggleVisualizerCameraVisualization,
-  updateCameraSize: updateVisualizerCameraSize,
-  updateColorMode: updateVisualizerColorMode,
-  updateCurrentFrame: updateVisualizerCurrentFrame,
-  toggleCameraFrustums: toggleVisualizerCameraFrustums,
-  exportToGLB: exportVisualizerToGLB,
-  startFrameByFrameFetch: startFrameByFrameFetch,
-  updateAccumulatedPointCloud: updateAccumulatedPointCloud,
-  fetchManifest: fetchManifest,
-  fetchExtrinsics: fetchExtrinsics,
-  fetchIntrinsics: fetchIntrinsics,
-  fetchDepth: fetchDepth,
-  fetchFrameImage: fetchFrameImage,
-  fetchAllExtraData: fetchAllExtraData
+  init: init3DScene,                            // 初始化3D场景
+  updateScene: updateScene,                     // 更新场景数据
+  resetCamera: reset3DCamera,                   // 重置相机位置
+  setViewDirection: setViewDirection,           // 设置相机视角方向
+  setViewToFirstCamera: setViewToFirstCamera,   // 切换到第一个相机视角
+  togglePointCloud: togglePointCloud,           // 切换点云显示
+  toggleTrajectory: toggleTrajectory,           // 切换轨迹显示
+  setCallbacks: setVisualizerCallbacks,         // 设置回调函数
+  setPointSize: setGuiPointSize,                // 设置点云大小
+  setShowCamera: setGuiShowCamera,              // 设置相机显示开关
+  setCamSize: setGuiCamSize,                    // 设置相机视锥体大小
+  getRenderer: getRenderer,                     // 获取渲染器
+  getScene: getScene,                           // 获取场景
+  getCamera: getCamera,                         // 获取相机
+  getCurrentSceneData: getCurrentSceneData,     // 获取当前场景数据
+  updatePointSize: updateVisualizerPointSize,   // 更新点云大小
+  toggleCameraVisualization: toggleVisualizerCameraVisualization,  // 切换相机可视化
+  updateCameraSize: updateVisualizerCameraSize, // 更新相机大小
+  updateColorMode: updateVisualizerColorMode,   // 更新颜色模式
+  updateCurrentFrame: updateVisualizerCurrentFrame,               // 更新当前帧
+  toggleCameraFrustums: toggleVisualizerCameraFrustums,           // 切换相机视锥体
+  exportToGLB: exportVisualizerToGLB,           // 导出为GLB文件
+  startFrameByFrameFetch: startFrameByFrameFetch,                 // 启动逐帧拉取
+  updateAccumulatedPointCloud: updateAccumulatedPointCloud,       // 更新累积点云
+  fetchManifest: fetchManifest,                 // 获取清单文件
+  fetchExtrinsics: fetchExtrinsics,             // 获取外参
+  fetchIntrinsics: fetchIntrinsics,             // 获取内参
+  fetchDepth: fetchDepth,                       // 获取深度图
+  fetchFrameImage: fetchFrameImage,             // 获取帧图像
+  fetchAllExtraData: fetchAllExtraData,         // 获取所有额外数据
+  enableCameraFollow: enableCameraFollow,       // 启用相机跟随
+  disableCameraFollow: disableCameraFollow,     // 禁用相机跟随
+  setMaxVisibleFrames: function(value) { maxVisibleFrames = value; updateVisibleFrames(); },  // 设置最大可见帧数
+  setCameraFollowDistance: function(value) { cameraFollowDistance = value; },  // 设置相机跟随距离
+  setCameraFollowSmoothFactor: function(value) { cameraFollowSmoothFactor = value; }  // 设置相机跟随平滑因子
 };
 
+// ============== 逐帧点云加载状态 ==============
+/** 当前完整的点云数据（所有帧累积） */
 let currentPointCloudData = null;
+/** 累积的点云坐标（扁平数组，每3个元素为一个xyz坐标） */
 let accumulatedPoints = [];
+/** 累积的点云颜色（扁平数组，每3个元素为一个rgb颜色） */
 let accumulatedColors = [];
+/** 累积的点云置信度（每1个元素为一个置信值） */
 let accumulatedConfs = [];
-let framePointClouds = [];  // 每帧独立存储: [{positions: Float32Array, colors: Float32Array, confs: Float32Array}]
+/** 每帧独立点云数据：[{positions: Float32Array, colors: Float32Array, confs: Float32Array}] */
+let framePointClouds = [];
+/** 可用的总帧数 */
 let totalFramesAvailable = 0;
+/** 当前正在加载的帧索引 */
 let currentFetchFrame = 0;
+/** 是否正在拉取帧数据 */
 let isFetchingFrames = false;
+/** 当前拉取使用的批次号 */
 let fetchBatchId = null;
-let frameRanges = [];  // 记录每帧的点云索引范围 [{start, end}, ...]
-let sceneCenter = [0, 0, 0];  // 场景中心（从 metadata 获取）
-let sceneScale = 1.0;  // 场景尺度（从 metadata 获取）
-let guiConfThreshold = 0;  // 置信度绝对阈值（与 see/ 一致）
-let guiDownsample = 19;  // 降采样步长
-let camerasData = null;  // cameras.json 数据
-let metadata = null;  // metadata.json 数据
+/** 每帧点云在累积数组中的索引范围 [{start: 起始索引, end: 结束索引}] */
+let frameRanges = [];
+/** 单一点云对象（合并所有帧，与 live_viewer.py 一致） */
+let mergedPointCloud = null;
+/** 每帧独立的 THREE.Points 对象（保留用于兼容旧逻辑） */
+let framePointCloudObjects = {};
+let maxVisibleFrames = 300;
+let cameraFollowEnabled = false;
+let currentFollowFrameIndex = -1;
+let cameraFollowDistance = 0.8;
+let cameraFollowSmoothFactor = 0.15;
+let currentCameraTargetPos = null;
+let currentCameraLookAt = null;
+let smoothedRawCamPos = null;
+let smoothedRawLookDir = null;
+const POSE_SMOOTH_FACTOR = 0.25;
+/** 场景中心坐标（从metadata.json获取） */
+let sceneCenter = [0, 0, 0];
+/** 场景缩放比例（从metadata.json获取） */
+let sceneScale = 1.0;
+/** 置信度绝对阈值（与 live_camera.py 一致，默认 0.7） */
+let guiConfThreshold = 0.7;
+/** 降采样步长（默认 5） */
+let guiDownsample = 5;
+/** 相机位姿数据（cameras.json内容） */
+let camerasData = null;
+/** 元数据（metadata.json内容） */
+let metadata = null;
 
+/**
+ * 更新点云大小
+ * @param {number} value - 新的点云渲染尺寸
+ */
 function updateVisualizerPointSize(value) {
-  if (pointCloud) {
-    pointCloud.material.size = parseFloat(value);
+  var size = parseFloat(value);
+  // 单一点云对象模式
+  if (mergedPointCloud) {
+    mergedPointCloud.material.size = size;
   }
+  // 兼容旧的点云对象
+  if (pointCloud) {
+    pointCloud.material.size = size;
+  }
+  Object.keys(framePointCloudObjects).forEach(function(key) {
+    framePointCloudObjects[key].material.size = size;
+  });
+  guiPointSize = size;
 }
 
 function toggleVisualizerCameraVisualization(enabled) {
@@ -1302,55 +1698,47 @@ function updateVisualizerCameraSize(value) {
 }
 
 function updateVisualizerColorMode(mode) {
-  if (!currentPointCloudData || !pointCloud) return;
-  
-  const colors = currentPointCloudData.colors;
-  const positions = currentPointCloudData.positions;
-  
-  let newColors;
-  
-  if (mode === 'rgb') {
-    newColors = colors;
-  } else if (mode === 'depth') {
-    newColors = generateDepthColors(positions);
-  } else if (mode === 'frame') {
-    newColors = generateFrameColors(currentPointCloudData.frameCount);
-  }
-  
-  if (newColors && pointCloud.geometry) {
-    pointCloud.geometry.setAttribute('color', new THREE.BufferAttribute(new THREE.Float32Array(newColors), 3));
-  }
+  if (Object.keys(framePointCloudObjects).length === 0) return;
+  rebuildAllFramePointClouds();
 }
 
 function updateVisualizerCurrentFrame(frameIndex) {
-  if (!pointCloud) return;
-  
-  // 合并视图：使用累积数据
-  if (frameIndex < 0 || frameIndex === 'merged') {
-    updateAccumulatedPointCloud();
+  // 单一点云对象模式
+  if (mergedPointCloud) {
+    if (frameIndex < 0 || frameIndex === 'merged') {
+      // 显示所有点
+      mergedPointCloud.geometry.setDrawRange(0, accumulatedPoints.length / 3);
+    } else if (frameRanges[frameIndex]) {
+      // 只显示指定帧的点
+      const range = frameRanges[frameIndex];
+      mergedPointCloud.geometry.setDrawRange(range.start, range.end - range.start);
+    }
+    highlightCurrentFrameFrustum(frameIndex);
     return;
   }
   
-  const frameData = framePointClouds[frameIndex];
-  if (!frameData) return;
+  // 兼容旧的独立对象逻辑
+  if (Object.keys(framePointCloudObjects).length === 0) return;
   
-  // ✅ 点云已在 fetchNextFrame 中变换到世界坐标，直接使用
-  const positions = frameData.positions;
-  const colors = frameData.colors;
-  const numPoints = positions.length / 3;
+  if (frameIndex < 0 || frameIndex === 'merged') {
+    if (!cameraFollowEnabled) {
+      Object.keys(framePointCloudObjects).forEach(function(key) {
+        framePointCloudObjects[key].visible = true;
+      });
+    }
+    return;
+  }
   
-  pointCloud.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  pointCloud.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  pointCloud.geometry.attributes.position.needsUpdate = true;
-  pointCloud.geometry.attributes.color.needsUpdate = true;
-  pointCloud.visible = true;
+  if (!cameraFollowEnabled) {
+    Object.keys(framePointCloudObjects).forEach(function(key) {
+      framePointCloudObjects[key].visible = (parseInt(key) === frameIndex);
+    });
+  }
   
   highlightCurrentFrameFrustum(frameIndex);
   
   const overlay = document.getElementById('canvasOverlay');
   if (overlay) overlay.style.display = 'none';
-  
-  console.log('Update current frame:', frameIndex, 'Visible points:', numPoints);
 }
 
 // ✅ 逐步更新相机视锥体和轨迹（每加载一帧就添加一个相机）
@@ -1360,52 +1748,6 @@ function updateCameraFrustumsIncremental(frameIndex) {
   const cam = camerasData[frameIndex];
   if (!(cam.R_c2w || cam.R_w2c) || !(cam.t_c2w || cam.t_w2c)) return;
   
-  const S = camerasData.length;
-  
-  // 构建当前帧的相机视锥体
-  const frustumScale = guiCamSize;
-  const R = new THREE.Matrix3().fromArray((cam.R_c2w || cam.R_w2c).flat());
-  const t = new THREE.Vector3((cam.t_c2w || cam.t_w2c)[0], (cam.t_c2w || cam.t_w2c)[1], (cam.t_c2w || cam.t_w2c)[2]);
-  const fx = cam.focal[0], fy = cam.focal[1];
-  const cx = cam.pp[0], cy = cam.pp[1];
-  const W = cam.image_w, H = cam.image_h;
-  const s = Math.max(frustumScale * sceneScale, 0.5);
-  
-  // 四个角点在相机空间（相机看向 +Z）
-  const cornersCam = [
-    new THREE.Vector3((-cx) * s / fx, (-cy) * s / fy, s),
-    new THREE.Vector3((W - cx) * s / fx, (-cy) * s / fy, s),
-    new THREE.Vector3((W - cx) * s / fx, (H - cy) * s / fy, s),
-    new THREE.Vector3((-cx) * s / fx, (H - cy) * s / fy, s),
-  ];
-  
-  // 变换到世界坐标
-  const cornersWorld = cornersCam.map(c => c.applyMatrix3(R).add(t));
-  
-  // 8条边：4条从相机中心到角点，4条连接角点
-  const edges = [
-    [t, cornersWorld[0]], [t, cornersWorld[1]], [t, cornersWorld[2]], [t, cornersWorld[3]],
-    [cornersWorld[0], cornersWorld[1]], [cornersWorld[1], cornersWorld[2]],
-    [cornersWorld[2], cornersWorld[3]], [cornersWorld[3], cornersWorld[0]],
-  ];
-  
-  const color = viridisColor(frameIndex / Math.max(1, S - 1));
-  const material = new THREE.LineBasicMaterial({
-    color,
-    transparent: true,
-    opacity: 0.7,
-  });
-  
-  const points = [];
-  edges.forEach(([a, b]) => { points.push(a, b); });
-  const geom = new THREE.BufferGeometry().setFromPoints(points);
-  const lines = new THREE.LineSegments(geom, material);
-  lines.userData = { frameIdx: frameIndex, cameraPos: t.clone() };
-  
-  frustumGroup.add(lines);
-  cameraFrustums.push(lines);
-  
-  // 更新轨迹线（移除旧轨迹，重新绘制）
   updateTrajectoryLine();
 }
 
@@ -1430,9 +1772,13 @@ function updateTrajectoryLine() {
   if (validCameras.length < 2) return;
   
   const trajectoryPoints = [];
+  const rx = (sceneCenter && sceneCenter.length === 3) ? sceneCenter[0] : 0;
+  const ry = (sceneCenter && sceneCenter.length === 3) ? sceneCenter[1] : 0;
+  const rz = (sceneCenter && sceneCenter.length === 3) ? sceneCenter[2] : 0;
   for (let i = 0; i < validCameras.length; i++) {
     const cam = validCameras[i];
-    trajectoryPoints.push(new THREE.Vector3((cam.t_c2w || cam.t_w2c)[0], (cam.t_c2w || cam.t_w2c)[1], (cam.t_c2w || cam.t_w2c)[2]));
+    const t = cam.t_c2w || cam.t_w2c;
+    trajectoryPoints.push(new THREE.Vector3(-t[0] - rx, -t[1] - ry, t[2] - rz));
   }
   
   const curve = new THREE.CatmullRomCurve3(trajectoryPoints);
@@ -1450,20 +1796,22 @@ function flyToCamera(frameIndex) {
   const cam = camerasData[frameIndex];
   if (!cam) return;
   
-  // 相机位置 t_w2c 是相机在世界坐标系中的位置
-  const camPos = new THREE.Vector3((cam.t_c2w || cam.t_w2c)[0], (cam.t_c2w || cam.t_w2c)[1], (cam.t_c2w || cam.t_w2c)[2]);
+  const t_raw = cam.t_c2w || cam.t_w2c;
+  const R_raw = (cam.R_c2w || cam.R_w2c).flat();
   
-  // 相机旋转矩阵 R_w2c（世界到相机）
-  const R = new THREE.Matrix3().fromArray((cam.R_c2w || cam.R_w2c).flat());
+  // 相机世界坐标（翻转X/Y匹配场景scale(-1,-1,1)）
+  const camPos = new THREE.Vector3(-t_raw[0], -t_raw[1], t_raw[2]);
   
-  // 相机看向的方向（相机空间的 -Z 方向变换到世界空间）
-  const lookDir = new THREE.Vector3(0, 0, -1).applyMatrix3(R).normalize();
+  // 相机朝向（前向，翻转X/Y匹配场景）
+  const forward = new THREE.Vector3(R_raw[2], R_raw[5], R_raw[8]);
+  forward.x = -forward.x;
+  forward.y = -forward.y;
+  forward.normalize();
   
-  // 计算观察目标点（相机前方一点）
-  const lookAtPoint = camPos.clone().add(lookDir.multiplyScalar(2));
+  const viewPos = camPos.clone().addScaledVector(forward, cameraFollowDistance);
+  const lookAtPoint = camPos.clone().addScaledVector(forward, 1.0);
   
-  // 平滑过渡到相机位置
-  animateCamera(camPos, lookAtPoint);
+  animateCamera(viewPos, lookAtPoint);
 }
 
 // 平滑动画过渡相机位置
@@ -1495,13 +1843,78 @@ function animateCamera(targetPos, targetLookAt) {
   requestAnimationFrame(animate);
 }
 
+function enableCameraFollow() {
+  cameraFollowEnabled = true;
+  currentCameraTargetPos = null;
+  currentCameraLookAt = null;
+  smoothedRawCamPos = null;
+  smoothedRawLookDir = null;
+  addLog('相机跟随已启用', 'ok');
+}
+
+function disableCameraFollow() {
+  cameraFollowEnabled = false;
+  currentCameraTargetPos = null;
+  currentCameraLookAt = null;
+  smoothedRawCamPos = null;
+  smoothedRawLookDir = null;
+  currentFollowFrameIndex = -1;
+  
+  var imgEl = document.getElementById('frameImagePreview');
+  var labelEl = document.getElementById('frameImageLabel');
+  if (imgEl) imgEl.style.display = 'none';
+  if (labelEl) labelEl.style.display = 'none';
+  
+  addLog('相机跟随已禁用', 'ok');
+}
+
+function updateCameraFollow(frameIndex) {
+  if (!cameraFollowEnabled || !camera3d || !window.controls || !camerasData || frameIndex >= camerasData.length) return;
+  
+  const cam = camerasData[frameIndex];
+  if (!cam) return;
+  
+  const t_raw = cam.t_c2w || cam.t_w2c;
+  const R_raw = (cam.R_c2w || cam.R_w2c).flat();
+  
+  // 相机世界坐标（翻转X/Y匹配场景scale(-1,-1,1)）
+  const camWorldPos = new THREE.Vector3(-t_raw[0], -t_raw[1], t_raw[2]);
+  
+  // 相机朝向（前向，翻转X/Y匹配场景）
+  const forward = new THREE.Vector3(R_raw[2], R_raw[5], R_raw[8]);
+  forward.x = -forward.x;
+  forward.y = -forward.y;
+  forward.normalize();
+  
+  // 平滑处理
+  if (!smoothedRawCamPos) {
+    smoothedRawCamPos = camWorldPos.clone();
+    smoothedRawLookDir = forward.clone();
+  } else {
+    smoothedRawCamPos.lerp(camWorldPos, POSE_SMOOTH_FACTOR);
+    smoothedRawLookDir.lerp(forward, POSE_SMOOTH_FACTOR).normalize();
+  }
+  
+  // 视角位置 = 相机位置，注视点 = 相机位置 + 朝向方向
+  const followPos = smoothedRawCamPos.clone();
+  const lookAtPoint = smoothedRawCamPos.clone().addScaledVector(smoothedRawLookDir, 1.0);
+  
+  currentCameraTargetPos = followPos;
+  currentCameraLookAt = lookAtPoint;
+  
+  if (currentFollowFrameIndex !== frameIndex) {
+    currentFollowFrameIndex = frameIndex;
+    updateFrameImagePreview(fetchBatchId, frameIndex);
+  }
+}
+
 // ✅ 高亮当前帧的视锥体
 function highlightCurrentFrameFrustum(frameIndex) {
   if (!camerasData || frameIndex >= camerasData.length) return;
   
   const S = camerasData.length;
   
-  cameraFrustums.forEach((obj, idx) => {
+  cameraFrustums.forEach((obj) => {
     // 跳过轨迹线
     if (obj.geometry && obj.geometry.attributes && 
         obj.geometry.attributes.position && 
@@ -1562,28 +1975,63 @@ function exportVisualizerToGLB() {
 }
 
 async function startFrameByFrameFetch(batchId, totalFrames) {
+  // 隐藏批次模式点云（使用单一点云对象模式）
+  if (pointCloud) {
+    pointCloud.visible = false;
+  }
+  
+  // 清理旧的单一点云对象
+  if (mergedPointCloud) {
+    cloudGroup.remove(mergedPointCloud);
+    mergedPointCloud.geometry.dispose();
+    mergedPointCloud.material.dispose();
+    mergedPointCloud = null;
+  }
+  
+  // 清理旧的独立对象
+  Object.keys(framePointCloudObjects).forEach(function(key) {
+    var obj = framePointCloudObjects[key];
+    if (obj) {
+      cloudGroup.remove(obj);
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) obj.material.dispose();
+    }
+  });
+  framePointCloudObjects = {};
+  
+  // 重置状态
+  framePointCloudObjects = {};
+  framePointClouds = [];
   accumulatedPoints = [];
   accumulatedColors = [];
-  accumulatedConfs = [];
-  framePointClouds = [];
   frameRanges = [];
   totalFramesAvailable = totalFrames;
   currentFetchFrame = 0;
   isFetchingFrames = true;
   fetchBatchId = batchId;
-  camerasData = []; // 清空相机数据，逐帧累积
+  camerasData = [];
   
   // ✅ 先加载 metadata，后续需要用它判断是否做坐标变换
   if (!metadata) {
     await fetchMetadata(batchId);
   }
   
-  addLog('开始逐帧拉取点云，共 ' + totalFrames + ' 帧', 'info');
+  enableCameraFollow();
   
-  await fetchNextFrame();
+  if (totalFrames) {
+    addLog('开始逐帧拉取点云，共 ' + totalFrames + ' 帧', 'info');
+  } else {
+    addLog('开始流式拉取点云...', 'info');
+  }
   
-  // 点云拉取完成后获取额外数据
-  await fetchAllExtraData(batchId, totalFrames);
+  // ✅ 流式模式：启动轮询
+  if (!totalFrames) {
+    startStreamingFetchLoop();
+  } else {
+    await fetchNextFrame();
+    // 点云拉取完成后获取额外数据
+    await fetchAllExtraData(batchId, totalFrames);
+  }
 }
 
 function loadPLY(url) {
@@ -1594,28 +2042,103 @@ function loadPLY(url) {
 }
 
 async function fetchNextFrame() {
-  if (!isFetchingFrames || currentFetchFrame >= totalFramesAvailable) {
+  if (!isFetchingFrames) {
     isFetchingFrames = false;
-    addLog('所有帧点云拉取完成，共 ' + accumulatedPoints.length / 3 + ' 个点', 'ok');
+    var totalFrames = Object.keys(framePointCloudObjects).length;
+    addLog('所有帧点云拉取完成，共 ' + totalFrames + ' 帧', 'ok');
+    
+    disableCameraFollow();
     
     const frameSlider = document.getElementById('frameSlider');
     if (frameSlider) {
-      frameSlider.max = frameRanges.length - 1;
-      frameSlider.value = frameRanges.length - 1;
-      document.getElementById('frameValue').textContent = frameRanges.length - 1;
+      frameSlider.max = totalFrames - 1;
+      frameSlider.value = totalFrames - 1;
+      document.getElementById('frameValue').textContent = totalFrames - 1;
     }
     
     return;
   }
   
+  // ✅ 批量模式：检查是否达到总帧数
+  if (totalFramesAvailable && currentFetchFrame >= totalFramesAvailable) {
+    isFetchingFrames = false;
+    var totalFrames = Object.keys(framePointCloudObjects).length;
+    addLog('所有帧点云拉取完成，共 ' + totalFrames + ' 帧', 'ok');
+    disableCameraFollow();
+    return;
+  }
+  
+  // ✅ 流式模式：先检查是否有新帧处理完成
+  let hasNewFrame = false;
+  let currentStatus = 'unknown';
+  let currentProcessedFrames = 0;
+  
   try {
-    const frameIdxStr = String(currentFetchFrame).padStart(3, '0');
-    const plyURL = BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/view/frame_' + frameIdxStr + '.ply';
+    const statusResponse = await fetch(`${BATCH_SERVER_URL}/batch/${fetchBatchId}/status`);
+    if (statusResponse.ok) {
+      const statusData = await statusResponse.json();
+      currentStatus = statusData.status || 'unknown';
+      currentProcessedFrames = statusData.processed_frames || 0;
+      
+      // 检查是否有新帧处理完成
+      if (currentProcessedFrames > currentFetchFrame) {
+        hasNewFrame = true;
+        console.log(`[流式拉取] 检测到新帧: processed_frames=${currentProcessedFrames}, currentFetchFrame=${currentFetchFrame}`);
+      }
+      // 如果推理完成但还有帧没拉取，继续拉取
+      if (currentStatus === 'completed' && currentFetchFrame < currentProcessedFrames) {
+        hasNewFrame = true;
+        console.log(`[流式拉取] 推理完成，继续拉取剩余帧: currentFetchFrame=${currentFetchFrame}, processed_frames=${currentProcessedFrames}`);
+      }
+    }
+  } catch (err) {
+    console.warn('检查状态失败:', err.message);
+  }
+  
+  if (!hasNewFrame && !totalFramesAvailable) {
+    if (currentStatus === 'completed' && currentFetchFrame >= currentProcessedFrames) {
+      isFetchingFrames = false;
+      var totalFrames = Object.keys(framePointCloudObjects).length;
+      addLog('所有帧点云拉取完成，共 ' + totalFrames + ' 帧', 'ok');
+      disableCameraFollow();
+      return;
+    }
     
-    const [plyGeom, cameraResponse] = await Promise.all([
-      loadPLY(plyURL).catch(() => null),
+    console.log(`[流式拉取] 暂无新帧，等待中... status=${currentStatus}, processed_frames=${currentProcessedFrames}, currentFetchFrame=${currentFetchFrame}`);
+    if (isFetchingFrames) {
+      setTimeout(fetchNextFrame, 500);
+    }
+    return;
+  }
+  
+  // ✅ 流式模式：有新帧或批量模式：继续拉取当前帧
+  if (!totalFramesAvailable) {
+    addLog('检测到新帧，开始拉取帧 ' + currentFetchFrame, 'info');
+  }
+  
+  try {
+    const [pointCloudResponse, cameraResponse] = await Promise.all([
+      fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + currentFetchFrame + '/point_cloud'),
       fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + currentFetchFrame + '/camera')
     ]);
+    
+    // ✅ 检查点云请求是否成功
+    if (!pointCloudResponse.ok) {
+      // 404表示帧还没处理完，等待后重试同一帧
+      if (pointCloudResponse.status === 404) {
+        addLog('帧 ' + currentFetchFrame + ' 正在处理中，等待...', 'info');
+        if (isFetchingFrames) {
+          setTimeout(fetchNextFrame, 500);
+        }
+        return;
+      }
+      addLog('帧 ' + currentFetchFrame + ' 请求失败: ' + pointCloudResponse.status, 'err');
+      currentFetchFrame++;
+      if (isFetchingFrames) {
+        setTimeout(fetchNextFrame, 100);
+      }
+      return;
+    }
     
     if (cameraResponse && cameraResponse.ok) {
       const cameraResult = await cameraResponse.json();
@@ -1624,59 +2147,37 @@ async function fetchNextFrame() {
       }
     }
     
-    if (plyGeom) {
-      const posAttr = plyGeom.attributes.position;
-      const colAttr = plyGeom.attributes.color;
-      const numVertices = posAttr.count;
+    // ✅ 从 API 获取点云数据
+    const pointCloudResult = await pointCloudResponse.json();
+    if (pointCloudResult.success) {
+      const { points_b64, colors_b64, confs_b64, total_points } = pointCloudResult;
+      const numVertices = total_points;
       
-      const startIndex = accumulatedPoints.length / 3;
-      for (let i = 0; i < numVertices; i++) {
-        accumulatedPoints.push(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
-        if (colAttr) {
-          accumulatedColors.push(colAttr.getX(i), colAttr.getY(i), colAttr.getZ(i));
-        } else {
-          accumulatedColors.push(0.5, 0.5, 0.5);
-        }
-        accumulatedConfs.push(1.0);
-      }
-      const endIndex = accumulatedPoints.length / 3;
-      frameRanges.push({ start: startIndex, end: endIndex });
+      // 解码 Base64 编码的数据
+      const flatPositions = base64ToFloat32Array(points_b64);
+      const flatColorsArr = colors_b64 ? base64ToFloat32Array(colors_b64) : new Float32Array(numVertices * 3).fill(0.5);
+      const flatConfsArr = confs_b64 ? base64ToFloat32Array(confs_b64) : new Float32Array(numVertices).fill(1.0);
       
-      const flatPositions = new Float32Array(numVertices * 3);
-      const flatColorsArr = new Float32Array(numVertices * 3);
-      const flatConfsArr = new Float32Array(numVertices);
-      for (let i = 0; i < numVertices; i++) {
-        flatPositions[i * 3] = posAttr.getX(i);
-        flatPositions[i * 3 + 1] = posAttr.getY(i);
-        flatPositions[i * 3 + 2] = posAttr.getZ(i);
-        if (colAttr) {
-          flatColorsArr[i * 3] = colAttr.getX(i);
-          flatColorsArr[i * 3 + 1] = colAttr.getY(i);
-          flatColorsArr[i * 3 + 2] = colAttr.getZ(i);
-        } else {
-          flatColorsArr[i * 3] = 0.5;
-          flatColorsArr[i * 3 + 1] = 0.5;
-          flatColorsArr[i * 3 + 2] = 0.5;
-        }
-        flatConfsArr[i] = 1.0;
+      // Recenter point cloud to scene center (like Viser does)
+      let rx = 0, ry = 0, rz = 0;
+      if (sceneCenter && sceneCenter.length === 3) {
+        rx = sceneCenter[0]; ry = sceneCenter[1]; rz = sceneCenter[2];
       }
+      if (rx !== 0 || ry !== 0 || rz !== 0) {
+        for (let i = 0; i < numVertices; i++) {
+          flatPositions[i * 3]     -= rx;
+          flatPositions[i * 3 + 1] -= ry;
+          flatPositions[i * 3 + 2] -= rz;
+        }
+      }
+      
       framePointClouds[currentFetchFrame] = {
         positions: flatPositions,
         colors: flatColorsArr,
         confs: flatConfsArr
       };
       
-      currentPointCloudData = {
-        positions: new Float32Array(accumulatedPoints),
-        colors: new Float32Array(accumulatedColors),
-        confs: new Float32Array(accumulatedConfs),
-        frameCount: currentFetchFrame + 1
-      };
-      
-      var loadingDone = currentFetchFrame >= totalFramesAvailable - 1;
-      if (loadingDone || currentFetchFrame % 30 === 0) {
-        updateAccumulatedPointCloud();
-      }
+      addFramePointCloudToScene(currentFetchFrame);
       
       const frameSliderEl = document.getElementById('frameSlider');
       const currentViewFrame = frameSliderEl ? parseInt(frameSliderEl.value) : -1;
@@ -1691,15 +2192,27 @@ async function fetchNextFrame() {
       }
       updateTrajectoryLine();
       
-      addLog('帧 ' + currentFetchFrame + '/' + totalFramesAvailable + ' PLY 加载完成，共 ' + numVertices + ' 点，累计 ' + (accumulatedPoints.length / 3) + ' 点', 'ok');
+      var totalRenderedFrames = Object.keys(framePointCloudObjects).length;
+      addLog('帧 ' + currentFetchFrame + (totalFramesAvailable ? '/' + totalFramesAvailable : '') + ' 点云加载完成，共 ' + numVertices + ' 点，累计 ' + totalRenderedFrames + ' 帧', 'ok');
+      
+      currentFetchFrame++;
+      
+      // ✅ 流式模式：先检查状态再继续拉取，避免频繁请求
+      // 批量模式：立即继续拉取下一帧
+      if (isFetchingFrames) {
+        if (totalFramesAvailable) {
+          setTimeout(fetchNextFrame, 50);
+        } else {
+          // 流式模式：重新检查状态，等待新帧
+          setTimeout(fetchNextFrame, 100);
+        }
+      }
     } else {
-      addLog('帧 ' + currentFetchFrame + ' 无点云数据', 'info');
-    }
-    
-    currentFetchFrame++;
-    
-    if (isFetchingFrames) {
-      setTimeout(fetchNextFrame, 50);
+      addLog('帧 ' + currentFetchFrame + ' API 响应不成功', 'info');
+      currentFetchFrame++;
+      if (isFetchingFrames) {
+        setTimeout(fetchNextFrame, 100);
+      }
     }
   } catch (err) {
     addLog('帧 ' + currentFetchFrame + ' 加载失败: ' + err.message, 'err');
@@ -1710,75 +2223,237 @@ async function fetchNextFrame() {
   }
 }
 
-function updateAccumulatedPointCloud() {
-  if (!THREE || !scene || !pointCloud) return;
+/**
+ * 启动流式拉取循环（用于实时推理场景）
+ */
+function startStreamingFetchLoop() {
+  if (!isFetchingFrames || !fetchBatchId) return;
   
-  const positions = currentPointCloudData.positions;
-  const colors = currentPointCloudData.colors;
-  const confs = currentPointCloudData.confs || new Float32Array(positions.length / 3);
+  // ✅ 简化逻辑：直接调用 fetchNextFrame，它会自己循环
+  fetchNextFrame();
+  
+  // 设置独立的状态监控定时器（用于检测推理完成）
+  const monitorStatus = async () => {
+    if (!isFetchingFrames) return;
+    
+    try {
+      const statusResponse = await fetch(`${BATCH_SERVER_URL}/batch/${fetchBatchId}/status`);
+      if (statusResponse.ok) {
+        const statusData = await statusResponse.json();
+        if (statusData.status === 'completed') {
+          // 推理完成，标记为完成状态
+          addLog('推理完成，等待拉取剩余帧...', 'info');
+        }
+      }
+    } catch (err) {
+      console.warn('状态监控失败:', err.message);
+    }
+    
+    if (isFetchingFrames) {
+      setTimeout(monitorStatus, 2000);
+    }
+  };
+  
+  // 启动状态监控
+  setTimeout(monitorStatus, 1000);
+}
+
+function addFramePointCloudToScene(frameIndex) {
+  if (!THREE || !scene || !cloudGroup) return;
+
+  const frameData = framePointClouds[frameIndex];
+  if (!frameData) return;
+
+  const positions = frameData.positions;
+  const colors = frameData.colors;
+  const confs = frameData.confs || new Float32Array(positions.length / 3);
   const numPoints = positions.length / 3;
+  if (numPoints === 0) return;
+
+  // 优化：单次遍历完成 isfinite + 置信度过滤 + 下采样
+  const stride = Math.max(1, guiDownsample);
+  const confThreshold = guiConfThreshold;
   
+  // 预分配数组（预估大小，避免多次扩容）
+  var maxSize = Math.ceil(numPoints / stride);
+  var filteredPositions = new Float32Array(maxSize * 3);
+  var filteredColors = new Float32Array(maxSize * 3);
+  var count = 0;
+  
+  for (var i = 0; i < numPoints; i++) {
+    // Step 1: isfinite 过滤
+    var x = positions[i * 3];
+    var y = positions[i * 3 + 1];
+    var z = positions[i * 3 + 2];
+    if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
+    
+    // Step 2: 置信度阈值过滤
+    if (confs[i] <= confThreshold) continue;
+    
+    // Step 3: 下采样（每隔 stride 个点取一个）
+    if (i % stride !== 0) continue;
+    
+    filteredPositions[count * 3] = x;
+    filteredPositions[count * 3 + 1] = y;
+    filteredPositions[count * 3 + 2] = z;
+    filteredColors[count * 3] = colors[i * 3];
+    filteredColors[count * 3 + 1] = colors[i * 3 + 1];
+    filteredColors[count * 3 + 2] = colors[i * 3 + 2];
+    count++;
+  }
+  
+  if (count === 0) return;
+  
+  // 截取实际大小的数组
+  filteredPositions = filteredPositions.slice(0, count * 3);
+  filteredColors = filteredColors.slice(0, count * 3);
+  
+  // 累积到全局数组
+  var startIdx = accumulatedPoints.length / 3;
+  for (var j = 0; j < count; j++) {
+    accumulatedPoints.push(filteredPositions[j * 3], filteredPositions[j * 3 + 1], filteredPositions[j * 3 + 2]);
+    accumulatedColors.push(filteredColors[j * 3], filteredColors[j * 3 + 1], filteredColors[j * 3 + 2]);
+  }
+  
+  // 记录该帧在累积数组中的范围
+  frameRanges[frameIndex] = {
+    start: startIdx,
+    end: startIdx + count
+  };
+
+  // 更新单一点云对象
+  updateMergedPointCloud();
+
+  visualizerStats.vertices = accumulatedPoints.length / 3;
+  if (onStatsUpdate) {
+    onStatsUpdate({ vertices: visualizerStats.vertices });
+  }
+
+  if (cameraFollowEnabled) {
+    updateCameraFollow(frameIndex);
+  }
+}
+
+function updateMergedPointCloud() {
+  if (!THREE || !scene || !cloudGroup) return;
+  
+  const numPoints = accumulatedPoints.length / 3;
   if (numPoints === 0) return;
   
-  // ✅ 点云用真实世界坐标（不移位）
-  // 置信度过滤（与 see/ 一致：绝对阈值）
-  const confThresholdVal = guiConfThreshold;
-  
-  // 置信度过滤
-  let filteredIndices = [];
-  for (let i = 0; i < numPoints; i++) {
-    const conf = confs[i] !== undefined ? confs[i] : 1.0;  // 默认置信度为1.0
-    if (conf >= confThresholdVal) {
-      filteredIndices.push(i);
+  // 安全检查：验证数据不包含 NaN
+  for (let i = 0; i < accumulatedPoints.length; i++) {
+    if (!isFinite(accumulatedPoints[i])) {
+      console.warn('[Spatial] Found NaN/Inf in accumulatedPoints at index', i);
+      return;
     }
   }
   
-  // 降采样（与 see/ 一致：步长降采样）
-  const stride = Math.max(1, guiDownsample);
-  let downsampledIndices = [];
-  for (let k = 0; k < filteredIndices.length; k += stride) {
-    downsampledIndices.push(filteredIndices[k]);
+  // 优化：使用 Float32Array.from() 直接转换，避免手动循环
+  const positionsAttr = new THREE.BufferAttribute(Float32Array.from(accumulatedPoints), 3);
+  const colorsAttr = new THREE.BufferAttribute(Float32Array.from(accumulatedColors), 3);
+  
+  if (!mergedPointCloud) {
+    var geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', positionsAttr);
+    geometry.setAttribute('color', colorsAttr);
+    
+    try {
+      geometry.computeBoundingSphere();
+    } catch (e) {
+      console.warn('[Spatial] computeBoundingSphere failed, skipping:', e.message);
+    }
+    
+    var material = new THREE.PointsMaterial({
+      size: guiPointSize,
+      vertexColors: true,
+      sizeAttenuation: true,
+      transparent: false,
+      opacity: 1.0,
+      depthWrite: true,
+      depthTest: true
+    });
+    mergedPointCloud = new THREE.Points(geometry, material);
+    cloudGroup.add(mergedPointCloud);
+  } else {
+    // 优化：复用 geometry，只更新 attribute
+    mergedPointCloud.geometry.setAttribute('position', positionsAttr);
+    mergedPointCloud.geometry.setAttribute('color', colorsAttr);
+    
+    try {
+      mergedPointCloud.geometry.computeBoundingSphere();
+    } catch (e) {
+      console.warn('[Spatial] computeBoundingSphere failed, skipping:', e.message);
+    }
   }
   
-  // ✅ 构建过滤+降采样后的点云（使用真实世界坐标，不移位）
-  const filteredPositions = new Float32Array(downsampledIndices.length * 3);
-  const filteredColors = new Float32Array(downsampledIndices.length * 3);
-  for (let k = 0; k < downsampledIndices.length; k++) {
-    const i = downsampledIndices[k];
-    filteredPositions[k * 3] = positions[i * 3];      // 真实 X 坐标
-    filteredPositions[k * 3 + 1] = positions[i * 3 + 1];  // 真实 Y 坐标
-    filteredPositions[k * 3 + 2] = positions[i * 3 + 2];  // 真实 Z 坐标
-    filteredColors[k * 3] = colors[i * 3];
-    filteredColors[k * 3 + 1] = colors[i * 3 + 1];
-    filteredColors[k * 3 + 2] = colors[i * 3 + 2];
+  // 更新点大小
+  mergedPointCloud.material.size = guiPointSize;
+}
+
+function updateVisibleFrames() {
+  // 单一点云对象模式：通过 drawRange 控制可见范围
+  if (mergedPointCloud && !cameraFollowEnabled) {
+    const totalFrames = frameRanges.filter(r => r).length;
+    
+    if (totalFrames <= maxVisibleFrames) {
+      // 显示所有点
+      mergedPointCloud.geometry.setDrawRange(0, accumulatedPoints.length / 3);
+    } else {
+      // 只显示最后 maxVisibleFrames 帧
+      const startFrameIdx = totalFrames - maxVisibleFrames;
+      let startPointIdx = 0;
+      for (let i = 0; i < startFrameIdx; i++) {
+        if (frameRanges[i]) {
+          startPointIdx = frameRanges[i].end;
+        }
+      }
+      mergedPointCloud.geometry.setDrawRange(startPointIdx, accumulatedPoints.length / 3 - startPointIdx);
+    }
   }
   
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(filteredPositions, 3));
-  geometry.setAttribute('color', new THREE.BufferAttribute(filteredColors, 3));
-  
-  if (pointCloud.geometry) {
-    pointCloud.geometry.dispose();
+  // 兼容旧的独立对象逻辑（保留但不再使用）
+  if (cameraFollowEnabled) {
+    Object.keys(framePointCloudObjects).forEach(function(key) {
+      if (framePointCloudObjects[key]) {
+        framePointCloudObjects[key].visible = true;
+      }
+    });
+    return;
   }
-  pointCloud.geometry = geometry;
+}
+
+function rebuildAllFramePointClouds() {
+  // 清空累积数据
+  accumulatedPoints = [];
+  accumulatedColors = [];
+  frameRanges = [];
   
-  pointCloud.material.vertexColors = true;
-  pointCloud.material.sizeAttenuation = true;
-  pointCloud.material.transparent = false;
-  pointCloud.material.opacity = 1.0;
-  pointCloud.material.depthWrite = true;
-  pointCloud.material.depthTest = true;
-  pointCloud.visible = true;
-  
-  visualizerStats.vertices = numPoints;
-  if (onStatsUpdate) {
-    onStatsUpdate({ vertices: numPoints });
+  // 重建单一点云
+  if (mergedPointCloud) {
+    cloudGroup.remove(mergedPointCloud);
+    mergedPointCloud.geometry.dispose();
+    mergedPointCloud.material.dispose();
+    mergedPointCloud = null;
   }
   
-  const overlay = document.getElementById('canvasOverlay');
-  if (overlay) {
-    overlay.style.display = 'none';
+  // 重新累积所有帧数据
+  for (var i = 0; i < framePointClouds.length; i++) {
+    if (framePointClouds[i]) {
+      addFramePointCloudToScene(i);
+    }
   }
+}
+
+function updateAllFramePointCloudsVisibility() {
+  Object.keys(framePointCloudObjects).forEach(function(key) {
+    framePointCloudObjects[key].visible = true;
+  });
+}
+
+function updateAccumulatedPointCloud() {
+  updateAllFramePointCloudsVisibility();
+  var overlay = document.getElementById('canvasOverlay');
+  if (overlay) overlay.style.display = 'none';
 }
 
 function percentile(arr, p) {
@@ -1891,6 +2566,26 @@ async function fetchFrameImage(batchId, frameIndex) {
   }
 }
 
+async function updateFrameImagePreview(batchId, frameIndex) {
+  const imgEl = document.getElementById('frameImagePreview');
+  const labelEl = document.getElementById('frameImageLabel');
+  if (!imgEl || !labelEl) return;
+  
+  if (!cameraFollowEnabled) {
+    imgEl.style.display = 'none';
+    labelEl.style.display = 'none';
+    return;
+  }
+  
+  const url = await fetchFrameImage(batchId, frameIndex);
+  if (url) {
+    imgEl.src = url;
+    imgEl.style.display = 'block';
+    labelEl.textContent = '帧 #' + frameIndex;
+    labelEl.style.display = 'block';
+  }
+}
+
 // 新增：获取 metadata.json（与 see/ 一致）
 async function fetchMetadata(batchId) {
   try {
@@ -1978,7 +2673,7 @@ function viridisColor(t) {
   return new THREE.Color(c[0], c[1], c[2]);
 }
 
-// 从 cameras.json 构建视锥体（与 see/ 完全一致）
+// 从 cameras.json 构建视锥体（Viser 风格：完整相机坐标系）
 function buildFrustumsFromCamerasData(camData) {
   if (!THREE || !scene) return;
   
@@ -1996,68 +2691,89 @@ function buildFrustumsFromCamerasData(camData) {
   });
   cameraFrustums = [];
   
-  const frustumScale = guiCamSize;
   const S = camData.length;
+  if (S === 0) return;
+  
+  // 计算采样步长（最多显示 60 个相机坐标系）
+  const step = Math.max(1, Math.floor(S / 60));
   
   for (let i = 0; i < S; i++) {
+    if (i % step !== 0 && i !== S - 1) continue;
+    
     const cam = camData[i];
-    if (!cam || !(cam.R_c2w || cam.R_w2c) || !(cam.t_c2w || cam.t_w2c)) continue;
-    const R = new THREE.Matrix3().fromArray((cam.R_c2w || cam.R_w2c).flat());
-    const t = new THREE.Vector3((cam.t_c2w || cam.t_w2c)[0], (cam.t_c2w || cam.t_w2c)[1], (cam.t_c2w || cam.t_w2c)[2]);
-    const fx = cam.focal[0], fy = cam.focal[1];
-    const cx = cam.pp[0], cy = cam.pp[1];
-    const W = cam.image_w, H = cam.image_h;
-    const s = Math.max(frustumScale * sceneScale, 0.5);
+    const t = cam.t_c2w || cam.t_w2c;
+    const R = cam.R_c2w || cam.R_w2c;
+    if (!t || !R) continue;
     
-    // 四个角点在相机空间（相机看向 +Z）
-    const cornersCam = [
-      new THREE.Vector3((-cx) * s / fx, (-cy) * s / fy, s),
-      new THREE.Vector3((W - cx) * s / fx, (-cy) * s / fy, s),
-      new THREE.Vector3((W - cx) * s / fx, (H - cy) * s / fy, s),
-      new THREE.Vector3((-cx) * s / fx, (H - cy) * s / fy, s),
-    ];
+    // 相机位置（翻转X/Y匹配场景scale(-1,-1,1)）
+    const camPos = new THREE.Vector3(-t[0], -t[1], t[2]);
     
-    // 变换到世界坐标
-    const cornersWorld = cornersCam.map(c => c.applyMatrix3(R).add(t));
+    // 从旋转矩阵提取相机坐标系的三个轴（翻转X/Y）
+    const xAxis = new THREE.Vector3(-R[0][0], -R[1][0], R[2][0]);
+    const yAxis = new THREE.Vector3(-R[0][1], -R[1][1], R[2][1]);
+    const zAxis = new THREE.Vector3(-R[0][2], -R[1][2], R[2][2]);
     
-    // 8条边：4条从相机中心到角点，4条连接角点
-    const edges = [
-      [t, cornersWorld[0]], [t, cornersWorld[1]], [t, cornersWorld[2]], [t, cornersWorld[3]],
-      [cornersWorld[0], cornersWorld[1]], [cornersWorld[1], cornersWorld[2]],
-      [cornersWorld[2], cornersWorld[3]], [cornersWorld[3], cornersWorld[0]],
-    ];
+    const axisLen = guiCamSize * 2;
+    const axisRadius = guiCamSize * 0.08;
     
-    const color = viridisColor(i / Math.max(1, S - 1));
-    const material = new THREE.LineBasicMaterial({
-      color,
-      transparent: true,
-      opacity: 0.7,
-    });
+    // X 轴（红色）
+    const xGeom = new THREE.CylinderGeometry(axisRadius, axisRadius, axisLen, 8);
+    xGeom.translate(0, axisLen / 2, 0);
+    xGeom.rotateZ(-Math.PI / 2);
+    const xMat = new THREE.MeshBasicMaterial({ color: 0xff3333, transparent: true, opacity: 0.9 });
+    const xAxisMesh = new THREE.Mesh(xGeom, xMat);
+    xAxisMesh.position.copy(camPos);
+    xAxisMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), xAxis);
+    frustumGroup.add(xAxisMesh);
+    cameraFrustums.push(xAxisMesh);
     
-    const points = [];
-    edges.forEach(([a, b]) => { points.push(a, b); });
-    const geom = new THREE.BufferGeometry().setFromPoints(points);
-    const lines = new THREE.LineSegments(geom, material);
-    lines.userData = { frameIdx: i, cameraPos: t.clone() };
+    // Y 轴（绿色）
+    const yGeom = new THREE.CylinderGeometry(axisRadius, axisRadius, axisLen, 8);
+    yGeom.translate(0, axisLen / 2, 0);
+    const yMat = new THREE.MeshBasicMaterial({ color: 0x33ff33, transparent: true, opacity: 0.9 });
+    const yAxisMesh = new THREE.Mesh(yGeom, yMat);
+    yAxisMesh.position.copy(camPos);
+    yAxisMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), yAxis);
+    frustumGroup.add(yAxisMesh);
+    cameraFrustums.push(yAxisMesh);
     
-    frustumGroup.add(lines);
-    cameraFrustums.push(lines);
+    // Z 轴（蓝色）
+    const zGeom = new THREE.CylinderGeometry(axisRadius, axisRadius, axisLen, 8);
+    zGeom.translate(0, axisLen / 2, 0);
+    zGeom.rotateX(Math.PI / 2);
+    const zMat = new THREE.MeshBasicMaterial({ color: 0x3366ff, transparent: true, opacity: 0.9 });
+    const zAxisMesh = new THREE.Mesh(zGeom, zMat);
+    zAxisMesh.position.copy(camPos);
+    zAxisMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), zAxis);
+    frustumGroup.add(zAxisMesh);
+    cameraFrustums.push(zAxisMesh);
+    
+    // 相机中心点
+    const centerGeom = new THREE.SphereGeometry(guiCamSize * 0.15, 8, 8);
+    const centerMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
+    const centerMesh = new THREE.Mesh(centerGeom, centerMat);
+    centerMesh.position.copy(camPos);
+    frustumGroup.add(centerMesh);
+    cameraFrustums.push(centerMesh);
   }
   
-  // 绘制相机轨迹线（连接所有 t_w2c）
+  // 绘制相机轨迹线（连接所有相机位置）
   if (S > 1) {
     const trajectoryPoints = [];
     for (let i = 0; i < S; i++) {
       const cam = camData[i];
-      trajectoryPoints.push(new THREE.Vector3((cam.t_c2w || cam.t_w2c)[0], (cam.t_c2w || cam.t_w2c)[1], (cam.t_c2w || cam.t_w2c)[2]));
+      const t = cam.t_c2w || cam.t_w2c;
+      if (t) trajectoryPoints.push(new THREE.Vector3(-t[0], -t[1], t[2]));
     }
-    const curve = new THREE.CatmullRomCurve3(trajectoryPoints);
-    const curvePoints = curve.getPoints(S * 2);
-    const trajectoryGeom = new THREE.BufferGeometry().setFromPoints(curvePoints);
-    const trajectoryMat = new THREE.LineBasicMaterial({ color: 0xff6b6b, transparent: true, opacity: 0.8 });
-    const trajectoryLine = new THREE.Line(trajectoryGeom, trajectoryMat);
-    frustumGroup.add(trajectoryLine);
-    cameraFrustums.push(trajectoryLine);
+    if (trajectoryPoints.length > 1) {
+      const curve = new THREE.CatmullRomCurve3(trajectoryPoints);
+      const curvePoints = curve.getPoints(S * 2);
+      const trajectoryGeom = new THREE.BufferGeometry().setFromPoints(curvePoints);
+      const trajectoryMat = new THREE.LineBasicMaterial({ color: 0xff6b6b, transparent: true, opacity: 0.6 });
+      const trajectoryLine = new THREE.Line(trajectoryGeom, trajectoryMat);
+      frustumGroup.add(trajectoryLine);
+      cameraFrustums.push(trajectoryLine);
+    }
   }
 }
 
@@ -2119,704 +2835,14 @@ function rebuildCameraFrustums() {
   }
 }
 
-// ============== 2D 地图层 (spatial_map.js) ==============
-
-let mapCanvas = null;
-let mapCtx = null;
-let mapWidth = 0;
-let mapHeight = 0;
-let mapPoints = [];
-let mapColors = [];
-let mapTrajectory = [];
-let mapCameraPoses = [];
-let mapScale = 1.0;
-let mapOffsetX = 0;
-let mapOffsetY = 0;
-let mapMinX = -5;
-let mapMaxX = 5;
-let mapMinZ = -5;
-let mapMaxZ = 5;
-let showGrid = true;
-let showHeatmap = false;
-let showTrajectory = true;
-let showPointCloud = true;
-let showCameraMarkers = true;
-let isDragging = false;
-let dragStartX = 0;
-let dragStartY = 0;
-let dragStartOffsetX = 0;
-let dragStartOffsetY = 0;
-let heatmapCanvas = null;
-let heatmapCtx = null;
-let heatmapDirty = true;
-let mapOnClick = null;
-let mapOnHover = null;
-
-const HEATMAP_CELL_SIZE = 8;
-const POINT_RENDER_SIZE = 2;
-
-function initMap() {
-  mapCanvas = document.getElementById('spatial2DMapCanvas');
-  if (!mapCanvas) {
-    console.error('[SpatialMap] Canvas element not found');
-    return;
-  }
-
-  mapCtx = mapCanvas.getContext('2d');
-  resizeMapCanvas();
-
-  mapCanvas.addEventListener('mousedown', onMapMouseDown);
-  mapCanvas.addEventListener('mousemove', onMapMouseMove);
-  mapCanvas.addEventListener('mouseup', onMapMouseUp);
-  mapCanvas.addEventListener('mouseleave', onMapMouseUp);
-  mapCanvas.addEventListener('wheel', onMapWheel, { passive: false });
-
-  window.addEventListener('resize', resizeMapCanvas);
-
-  console.log('[SpatialMap] 2D map initialized');
-}
-
-function resizeMapCanvas() {
-  const container = document.getElementById('spatial2DMapContainer');
-  if (!container || !mapCanvas) return;
-
-  mapWidth = container.clientWidth;
-  mapHeight = container.clientHeight;
-  mapCanvas.width = mapWidth * window.devicePixelRatio;
-  mapCanvas.height = mapHeight * window.devicePixelRatio;
-  mapCanvas.style.width = mapWidth + 'px';
-  mapCanvas.style.height = mapHeight + 'px';
-  mapCtx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
-
-  if (heatmapCanvas) {
-    heatmapCanvas.width = mapWidth;
-    heatmapCanvas.height = mapHeight;
-  }
-
-  heatmapDirty = true;
-  renderMap();
-}
-
-function worldToScreen(wx, wz) {
-  const rangeX = mapMaxX - mapMinX || 1;
-  const rangeZ = mapMaxZ - mapMinZ || 1;
-  const padding = 40;
-  const drawW = mapWidth - padding * 2;
-  const drawH = mapHeight - padding * 2;
-  const baseScale = Math.min(drawW / rangeX, drawH / rangeZ);
-
-  const sx = padding + (wx - mapMinX) / rangeX * drawW * mapScale + mapOffsetX;
-  const sy = padding + (wz - mapMinZ) / rangeZ * drawH * mapScale + mapOffsetY;
-
-  return { x: sx, y: sy };
-}
-
-function screenToWorld(sx, sy) {
-  const rangeX = mapMaxX - mapMinX || 1;
-  const rangeZ = mapMaxZ - mapMinZ || 1;
-  const padding = 40;
-  const drawW = mapWidth - padding * 2;
-  const drawH = mapHeight - padding * 2;
-
-  const wx = ((sx - mapOffsetX - padding) / drawW) * rangeX / mapScale + mapMinX;
-  const wz = ((sy - mapOffsetY - padding) / drawH) * rangeZ / mapScale + mapMinZ;
-
-  return { x: wx, z: wz };
-}
-
-function computeBounds() {
-  if (mapPoints.length === 0 && mapTrajectory.length === 0) {
-    mapMinX = -5; mapMaxX = 5;
-    mapMinZ = -5; mapMaxZ = 5;
-    return;
-  }
-
-  let minX = Infinity, maxX = -Infinity;
-  let minZ = Infinity, maxZ = -Infinity;
-
-  for (let i = 0; i < mapPoints.length; i += 3) {
-    const x = mapPoints[i];
-    const z = mapPoints[i + 2];
-    if (isFinite(x) && isFinite(z)) {
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (z < minZ) minZ = z;
-      if (z > maxZ) maxZ = z;
-    }
-  }
-
-  for (let i = 0; i < mapTrajectory.length; i++) {
-    const p = mapTrajectory[i];
-    if (p.x < minX) minX = p.x;
-    if (p.x > maxX) maxX = p.x;
-    if (p.z < minZ) minZ = p.z;
-    if (p.z > maxZ) maxZ = p.z;
-  }
-
-  const padX = Math.max((maxX - minX) * 0.15, 0.5);
-  const padZ = Math.max((maxZ - minZ) * 0.15, 0.5);
-  mapMinX = minX - padX;
-  mapMaxX = maxX + padX;
-  mapMinZ = minZ - padZ;
-  mapMaxZ = maxZ + padZ;
-}
-
-function updateMapData(data) {
-  if (!data) return;
-
-  if (data.points && data.points.length > 0) {
-    mapPoints = data.points instanceof Float32Array ? Array.from(data.points) : data.points;
-  }
-  if (data.colors && data.colors.length > 0) {
-    mapColors = data.colors instanceof Uint8Array ? Array.from(data.colors) : data.colors;
-  }
-  if (data.cameraPoses && data.cameraPoses.length > 0) {
-    mapCameraPoses = data.cameraPoses;
-    mapTrajectory = data.cameraPoses.map(function(pose) {
-      if (pose.position) {
-        return { x: pose.position[0], y: pose.position[1], z: pose.position[2], frameId: pose.frame_id };
-      }
-      return null;
-    }).filter(Boolean);
-  }
-
-  computeBounds();
-  heatmapDirty = true;
-  renderMap();
-
-  const overlay = document.getElementById('mapOverlay');
-  if (overlay && mapPoints.length > 0) {
-    overlay.style.display = 'none';
-  }
-}
-
-function renderMap() {
-  if (!mapCtx || mapWidth === 0 || mapHeight === 0) return;
-
-  mapCtx.clearRect(0, 0, mapWidth, mapHeight);
-
-  drawBackground();
-
-  if (showGrid) drawGrid();
-
-  if (showHeatmap && mapPoints.length > 0) drawHeatmap();
-
-  if (showPointCloud && mapPoints.length > 0) drawPoints();
-
-  if (showTrajectory && mapTrajectory.length > 0) drawTrajectory();
-
-  if (showCameraMarkers && mapTrajectory.length > 0) drawCameraMarkers();
-
-  drawAxisLabels();
-}
-
-function drawBackground() {
-  mapCtx.fillStyle = '#0d1117';
-  mapCtx.fillRect(0, 0, mapWidth, mapHeight);
-
-  const gradient = mapCtx.createRadialGradient(
-    mapWidth / 2, mapHeight / 2, 0,
-    mapWidth / 2, mapHeight / 2, Math.max(mapWidth, mapHeight) * 0.6
-  );
-  gradient.addColorStop(0, 'rgba(33, 150, 243, 0.03)');
-  gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-  mapCtx.fillStyle = gradient;
-  mapCtx.fillRect(0, 0, mapWidth, mapHeight);
-}
-
-function drawGrid() {
-  const rangeX = mapMaxX - mapMinX;
-  const rangeZ = mapMaxZ - mapMinZ;
-  const maxRange = Math.max(rangeX, rangeZ);
-
-  let step = 1;
-  if (maxRange > 50) step = 10;
-  else if (maxRange > 20) step = 5;
-  else if (maxRange > 10) step = 2;
-  else if (maxRange > 2) step = 0.5;
-  else step = 0.1;
-
-  mapCtx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
-  mapCtx.lineWidth = 0.5;
-  mapCtx.font = '10px monospace';
-  mapCtx.fillStyle = 'rgba(255, 255, 255, 0.25)';
-
-  const startX = Math.floor(mapMinX / step) * step;
-  const startZ = Math.floor(mapMinZ / step) * step;
-
-  for (let wx = startX; wx <= mapMaxX; wx += step) {
-    const s = worldToScreen(wx, 0);
-    mapCtx.beginPath();
-    mapCtx.moveTo(s.x, 0);
-    mapCtx.lineTo(s.x, mapHeight);
-    mapCtx.stroke();
-
-    if (Math.abs(wx) > step * 0.01) {
-      mapCtx.fillText(wx.toFixed(step < 1 ? 1 : 0), s.x + 2, mapHeight - 5);
-    }
-  }
-
-  for (let wz = startZ; wz <= mapMaxZ; wz += step) {
-    const s = worldToScreen(0, wz);
-    mapCtx.beginPath();
-    mapCtx.moveTo(0, s.y);
-    mapCtx.lineTo(mapWidth, s.y);
-    mapCtx.stroke();
-
-    if (Math.abs(wz) > step * 0.01) {
-      mapCtx.fillText(wz.toFixed(step < 1 ? 1 : 0), 5, s.y - 2);
-    }
-  }
-
-  const origin = worldToScreen(0, 0);
-  mapCtx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-  mapCtx.lineWidth = 1;
-  mapCtx.beginPath();
-  mapCtx.moveTo(origin.x, 0);
-  mapCtx.lineTo(origin.x, mapHeight);
-  mapCtx.stroke();
-  mapCtx.beginPath();
-  mapCtx.moveTo(0, origin.y);
-  mapCtx.lineTo(mapWidth, origin.y);
-  mapCtx.stroke();
-}
-
-function drawPoints() {
-  const numPoints = mapPoints.length / 3;
-  const hasColors = mapColors.length >= numPoints * 3;
-
-  for (let i = 0; i < numPoints; i++) {
-    const wx = mapPoints[i * 3];
-    const wz = mapPoints[i * 3 + 2];
-
-    if (!isFinite(wx) || !isFinite(wz)) continue;
-
-    const s = worldToScreen(wx, wz);
-
-    if (s.x < -10 || s.x > mapWidth + 10 || s.y < -10 || s.y > mapHeight + 10) continue;
-
-    let r = 100, g = 180, b = 255;
-    if (hasColors) {
-      r = mapColors[i * 3];
-      g = mapColors[i * 3 + 1];
-      b = mapColors[i * 3 + 2];
-      if (r > 1 || g > 1 || b > 1) {
-        r = Math.round(r);
-        g = Math.round(g);
-        b = Math.round(b);
-      } else {
-        r = Math.round(r * 255);
-        g = Math.round(g * 255);
-        b = Math.round(b * 255);
-      }
-    }
-
-    const height = mapPoints[i * 3 + 1];
-    if (!hasColors && isFinite(height)) {
-      const range = mapMaxZ - mapMinZ || 1;
-      const t = Math.max(0, Math.min(1, (height - mapMinZ) / range));
-      r = Math.round(30 + t * 200);
-      g = Math.round(100 + (1 - t) * 155);
-      b = Math.round(255 - t * 100);
-    }
-
-    mapCtx.fillStyle = 'rgba(' + r + ',' + g + ',' + b + ',0.7)';
-    mapCtx.fillRect(s.x - POINT_RENDER_SIZE / 2, s.y - POINT_RENDER_SIZE / 2, POINT_RENDER_SIZE, POINT_RENDER_SIZE);
-  }
-}
-
-function drawHeatmap() {
-  if (heatmapDirty || !heatmapCanvas) {
-    if (!heatmapCanvas) {
-      heatmapCanvas = document.createElement('canvas');
-      heatmapCtx = heatmapCanvas.getContext('2d');
-    }
-    heatmapCanvas.width = mapWidth;
-    heatmapCanvas.height = mapHeight;
-    heatmapCtx.clearRect(0, 0, mapWidth, mapHeight);
-
-    const cellW = HEATMAP_CELL_SIZE;
-    const cellH = HEATMAP_CELL_SIZE;
-    const cols = Math.ceil(mapWidth / cellW);
-    const rows = Math.ceil(mapHeight / cellH);
-    const counts = new Float32Array(cols * rows);
-
-    const numPoints = mapPoints.length / 3;
-    let maxCount = 0;
-
-    for (let i = 0; i < numPoints; i++) {
-      const wx = mapPoints[i * 3];
-      const wz = mapPoints[i * 3 + 2];
-      if (!isFinite(wx) || !isFinite(wz)) continue;
-
-      const s = worldToScreen(wx, wz);
-      const col = Math.floor(s.x / cellW);
-      const row = Math.floor(s.y / cellH);
-
-      if (col >= 0 && col < cols && row >= 0 && row < rows) {
-        counts[row * cols + col]++;
-        if (counts[row * cols + col] > maxCount) {
-          maxCount = counts[row * cols + col];
-        }
-      }
-    }
-
-    if (maxCount > 0) {
-      for (let row = 0; row < rows; row++) {
-        for (let col = 0; col < cols; col++) {
-          const count = counts[row * cols + col];
-          if (count === 0) continue;
-
-          const t = count / maxCount;
-          let r, g, b;
-          if (t < 0.25) {
-            r = 0; g = Math.round(t * 4 * 255); b = 255;
-          } else if (t < 0.5) {
-            r = 0; g = 255; b = Math.round((1 - (t - 0.25) * 4) * 255);
-          } else if (t < 0.75) {
-            r = Math.round((t - 0.5) * 4 * 255); g = 255; b = 0;
-          } else {
-            r = 255; g = Math.round((1 - (t - 0.75) * 4) * 255); b = 0;
-          }
-
-          heatmapCtx.fillStyle = 'rgba(' + r + ',' + g + ',' + b + ',' + (0.15 + t * 0.35) + ')';
-          heatmapCtx.fillRect(col * cellW, row * cellH, cellW, cellH);
-        }
-      }
-    }
-
-    heatmapDirty = false;
-  }
-
-  mapCtx.drawImage(heatmapCanvas, 0, 0);
-}
-
-function drawTrajectory() {
-  if (mapTrajectory.length < 2) return;
-
-  mapCtx.lineWidth = 2;
-  mapCtx.lineCap = 'round';
-  mapCtx.lineJoin = 'round';
-
-  for (let i = 1; i < mapTrajectory.length; i++) {
-    const p0 = worldToScreen(mapTrajectory[i - 1].x, mapTrajectory[i - 1].z);
-    const p1 = worldToScreen(mapTrajectory[i].x, mapTrajectory[i].z);
-
-    const t = i / mapTrajectory.length;
-    const hue = t * 0.8 + 0.15;
-    const color = hslToRgb(hue, 0.9, 0.6);
-
-    mapCtx.strokeStyle = 'rgba(' + color.r + ',' + color.g + ',' + color.b + ',0.8)';
-    mapCtx.beginPath();
-    mapCtx.moveTo(p0.x, p0.y);
-    mapCtx.lineTo(p1.x, p1.y);
-    mapCtx.stroke();
-  }
-
-  mapCtx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-  mapCtx.lineWidth = 6;
-  mapCtx.beginPath();
-  const first = worldToScreen(mapTrajectory[0].x, mapTrajectory[0].z);
-  mapCtx.moveTo(first.x, first.y);
-  for (let i = 1; i < mapTrajectory.length; i++) {
-    const p = worldToScreen(mapTrajectory[i].x, mapTrajectory[i].z);
-    mapCtx.lineTo(p.x, p.y);
-  }
-  mapCtx.stroke();
-}
-
-function drawCameraMarkers() {
-  const step = Math.max(1, Math.floor(mapTrajectory.length / 30));
-
-  for (let i = 0; i < mapTrajectory.length; i++) {
-    if (i % step !== 0 && i !== 0 && i !== mapTrajectory.length - 1) continue;
-
-    const pt = mapTrajectory[i];
-    const s = worldToScreen(pt.x, pt.z);
-    const isStart = i === 0;
-    const isEnd = i === mapTrajectory.length - 1;
-
-    if (isStart || isEnd) {
-      mapCtx.beginPath();
-      mapCtx.arc(s.x, s.y, 6, 0, Math.PI * 2);
-      mapCtx.fillStyle = isStart ? '#4CAF50' : '#f44336';
-      mapCtx.fill();
-      mapCtx.strokeStyle = 'rgba(255,255,255,0.8)';
-      mapCtx.lineWidth = 2;
-      mapCtx.stroke();
-
-      mapCtx.font = 'bold 10px sans-serif';
-      mapCtx.fillStyle = '#fff';
-      mapCtx.textAlign = 'center';
-      mapCtx.fillText(isStart ? 'S' : 'E', s.x, s.y + 3.5);
-    } else {
-      const t = i / mapTrajectory.length;
-      const hue = t * 0.8 + 0.15;
-      const color = hslToRgb(hue, 0.9, 0.6);
-
-      mapCtx.beginPath();
-      mapCtx.arc(s.x, s.y, 3, 0, Math.PI * 2);
-      mapCtx.fillStyle = 'rgba(' + color.r + ',' + color.g + ',' + color.b + ',0.8)';
-      mapCtx.fill();
-    }
-
-    if (mapCameraPoses[i] && mapCameraPoses[i].R) {
-      drawCameraFrustum(s, mapCameraPoses[i], i);
-    }
-  }
-}
-
-function drawCameraFrustum(screenPos, pose, index) {
-  const R = pose.R;
-  if (!R || R.length < 3) return;
-
-  const frustumSize = 8;
-  let fwdX = 0, fwdZ = 1;
-  if (R[0] && R[2]) {
-    fwdX = -R[2][0];
-    fwdZ = -R[2][2];
-  }
-  const len = Math.sqrt(fwdX * fwdX + fwdZ * fwdZ) || 1;
-  fwdX /= len;
-  fwdZ /= len;
-
-  const perpX = -fwdZ;
-  const perpZ = fwdX;
-
-  const tipX = screenPos.x;
-  const tipY = screenPos.y;
-  const baseCX = tipX + fwdX * frustumSize;
-  const baseCY = tipY + fwdZ * frustumSize;
-  const halfW = frustumSize * 0.4;
-
-  const t = index / Math.max(mapCameraPoses.length, 1);
-  const hue = t * 0.8 + 0.15;
-  const color = hslToRgb(hue, 0.8, 0.6);
-
-  mapCtx.strokeStyle = 'rgba(' + color.r + ',' + color.g + ',' + color.b + ',0.5)';
-  mapCtx.lineWidth = 1;
-  mapCtx.beginPath();
-  mapCtx.moveTo(tipX, tipY);
-  mapCtx.lineTo(baseCX + perpX * halfW, baseCY + perpZ * halfW);
-  mapCtx.moveTo(tipX, tipY);
-  mapCtx.lineTo(baseCX - perpX * halfW, baseCY - perpZ * halfW);
-  mapCtx.stroke();
-}
-
-function drawAxisLabels() {
-  const origin = worldToScreen(0, 0);
-
-  mapCtx.font = 'bold 12px sans-serif';
-  mapCtx.textAlign = 'center';
-
-  mapCtx.fillStyle = 'rgba(244, 67, 54, 0.7)';
-  mapCtx.fillText('X+', Math.min(mapWidth - 15, origin.x + 40), origin.y - 5);
-
-  mapCtx.fillStyle = 'rgba(76, 175, 80, 0.7)';
-  mapCtx.fillText('Z+', origin.x + 12, Math.max(15, origin.y - 30));
-
-  mapCtx.fillStyle = 'rgba(255,255,255,0.3)';
-  mapCtx.font = '10px sans-serif';
-  mapCtx.fillText('O', origin.x + 10, origin.y + 12);
-}
-
-function hslToRgb(h, s, l) {
-  let r, g, b;
-  if (s === 0) {
-    r = g = b = l;
-  } else {
-    function hue2rgb(p, q, t) {
-      if (t < 0) t += 1;
-      if (t > 1) t -= 1;
-      if (t < 1/6) return p + (q - p) * 6 * t;
-      if (t < 1/2) return q;
-      if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
-      return p;
-    }
-    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-    const p = 2 * l - q;
-    r = hue2rgb(p, q, h + 1/3);
-    g = hue2rgb(p, q, h);
-    b = hue2rgb(p, q, h - 1/3);
-  }
-  return { r: Math.round(r * 255), g: Math.round(g * 255), b: Math.round(b * 255) };
-}
-
-function onMapMouseDown(e) {
-  isDragging = true;
-  dragStartX = e.clientX;
-  dragStartY = e.clientY;
-  dragStartOffsetX = mapOffsetX;
-  dragStartOffsetY = mapOffsetY;
-  mapCanvas.style.cursor = 'grabbing';
-}
-
-function onMapMouseMove(e) {
-  const rect = mapCanvas.getBoundingClientRect();
-  const sx = e.clientX - rect.left;
-  const sy = e.clientY - rect.top;
-  const world = screenToWorld(sx, sy);
-
-  const coordInfo = document.getElementById('mapCoordInfo');
-  if (coordInfo) {
-    coordInfo.textContent = 'X: ' + world.x.toFixed(2) + '  Z: ' + world.z.toFixed(2);
-  }
-
-  if (isDragging) {
-    mapOffsetX = dragStartOffsetX + (e.clientX - dragStartX);
-    mapOffsetY = dragStartOffsetY + (e.clientY - dragStartY);
-    heatmapDirty = true;
-    renderMap();
-  }
-
-  if (mapOnHover) {
-    mapOnHover(world.x, world.z, sx, sy);
-  }
-}
-
-function onMapMouseUp(e) {
-  if (isDragging) {
-    isDragging = false;
-    mapCanvas.style.cursor = 'grab';
-
-    if (Math.abs(e.clientX - dragStartX) < 3 && Math.abs(e.clientY - dragStartY) < 3) {
-      const rect = mapCanvas.getBoundingClientRect();
-      const sx = e.clientX - rect.left;
-      const sy = e.clientY - rect.top;
-      const world = screenToWorld(sx, sy);
-      if (mapOnClick) {
-        mapOnClick(world.x, world.z, sx, sy);
-      }
-    }
-  }
-}
-
-function onMapWheel(e) {
-  e.preventDefault();
-
-  const rect = mapCanvas.getBoundingClientRect();
-  const mx = e.clientX - rect.left;
-  const my = e.clientY - rect.top;
-
-  const zoomFactor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-  const newScale = Math.max(0.1, Math.min(50, mapScale * zoomFactor));
-
-  const worldBefore = screenToWorld(mx, my);
-
-  mapScale = newScale;
-
-  const worldAfter = screenToWorld(mx, my);
-  mapOffsetX += (worldAfter.x - worldBefore.x) * 0;
-  mapOffsetY += (worldAfter.z - worldBefore.z) * 0;
-
-  mapOffsetX += (mx - mapWidth / 2) * (1 - zoomFactor);
-  mapOffsetY += (my - mapHeight / 2) * (1 - zoomFactor);
-
-  updateZoomInfo();
-  heatmapDirty = true;
-  renderMap();
-}
-
-function updateZoomInfo() {
-  const zoomInfo = document.getElementById('mapZoomInfo');
-  if (zoomInfo) {
-    zoomInfo.textContent = '缩放: ' + mapScale.toFixed(1) + 'x';
-  }
-}
-
-function mapZoomIn() {
-  mapScale = Math.min(50, mapScale * 1.3);
-  updateZoomInfo();
-  heatmapDirty = true;
-  renderMap();
-}
-
-function mapZoomOut() {
-  mapScale = Math.max(0.1, mapScale / 1.3);
-  updateZoomInfo();
-  heatmapDirty = true;
-  renderMap();
-}
-
-function mapResetView() {
-  mapScale = 1.0;
-  mapOffsetX = 0;
-  mapOffsetY = 0;
-  computeBounds();
-  updateZoomInfo();
-  heatmapDirty = true;
-  renderMap();
-}
-
-function mapToggleGrid() {
-  showGrid = !showGrid;
-  renderMap();
-}
-
-function mapToggleHeatmap() {
-  showHeatmap = !showHeatmap;
-  heatmapDirty = true;
-  renderMap();
-}
-
-function mapSetCallbacks(callbacks) {
-  if (callbacks.onMapClick) mapOnClick = callbacks.onMapClick;
-  if (callbacks.onMapHover) mapOnHover = callbacks.onMapHover;
-}
-
-function getMapState() {
-  return {
-    scale: mapScale,
-    offsetX: mapOffsetX,
-    offsetY: mapOffsetY,
-    pointCount: mapPoints.length / 3,
-    trajectoryLength: mapTrajectory.length,
-    showGrid: showGrid,
-    showHeatmap: showHeatmap,
-    showTrajectory: showTrajectory,
-    showPointCloud: showPointCloud,
-    showCameraMarkers: showCameraMarkers
-  };
-}
-
-function mapClear() {
-  mapPoints = [];
-  mapColors = [];
-  mapTrajectory = [];
-  mapCameraPoses = [];
-  mapScale = 1.0;
-  mapOffsetX = 0;
-  mapOffsetY = 0;
-  heatmapDirty = true;
-  renderMap();
-
-  const overlay = document.getElementById('mapOverlay');
-  if (overlay) overlay.style.display = 'flex';
-}
-
-// ============== 2D 地图模块导出 ==============
-window.SpatialMap = {
-  init: initMap,
-  updateData: updateMapData,
-  render: renderMap,
-  zoomIn: mapZoomIn,
-  zoomOut: mapZoomOut,
-  resetView: mapResetView,
-  toggleGrid: mapToggleGrid,
-  toggleHeatmap: mapToggleHeatmap,
-  setCallbacks: mapSetCallbacks,
-  getState: getMapState,
-  clear: mapClear
-};
-
-// ============== UI 控制层 (spatial_ui.js) ==============
-
+/**
+ * 初始化空间记忆系统
+ * 依次初始化摄像头、3D场景、事件监听、API和可视化模块
+ */
 async function initSpatialMemory() {
-  initCamera();
+  switchToLocalCamera();
   await init3DScene();
-  initMap();
   initEventListeners();
-  updateTrajectorySvg();
   initApiAndVisualizer();
 
   const startBtn = document.getElementById('spatialStartCaptureBtn');
@@ -2837,11 +2863,12 @@ async function initSpatialMemory() {
     stopBtn.disabled = true;
     console.log('[Spatial] 停止采集按钮已禁用');
   }
-
-  syncServerCaptureStatus();
-  setInterval(syncServerCaptureStatus, 3000);
 }
 
+/**
+ * 初始化API和可视化模块
+ * 设置回调函数、模块间通信、启动服务状态检查
+ */
 function initApiAndVisualizer() {
   if (typeof SpatialApi === 'undefined' || typeof SpatialVisualizer === 'undefined') {
     console.error('[Spatial] 模块未加载');
@@ -2904,9 +2931,6 @@ function initApiAndVisualizer() {
         var ppEl = document.getElementById('processProgress');
         if (ppEl && status.progress) ppEl.textContent = status.progress;
       }
-    },
-    onWebSocketStatusChange: function(isConnected) {
-      updateWebSocketStatus(isConnected);
     }
   });
 
@@ -2921,108 +2945,26 @@ function initApiAndVisualizer() {
   SpatialApi.setCaptureFrameFunc(captureCurrentFrameData);
 }
 
+/**
+ * 切换空间视图模式
+ * @param {string} view - 视图模式（'3d'或'2d'，2D功能已移除）
+ */
 function switchSpatialView(view) {
   currentSpatialView = view;
   var container3d = document.getElementById('spatialCanvasContainer');
-  var container2d = document.getElementById('spatial2DMapContainer');
   var btn3d = document.getElementById('view3DBtn');
-  var btn2d = document.getElementById('view2DBtn');
 
   if (view === '2d') {
-    if (container3d) container3d.style.display = 'none';
-    if (container2d) container2d.style.display = 'block';
-    if (btn3d) btn3d.classList.remove('active');
-    if (btn2d) btn2d.classList.add('active');
-    if (typeof SpatialMap !== 'undefined') {
-      if (typeof SpatialVisualizer !== 'undefined' && SpatialVisualizer.getCurrentSceneData) {
-        var sceneData = SpatialVisualizer.getCurrentSceneData();
-        if (sceneData.points.length > 0) {
-          SpatialMap.updateData(sceneData);
-        }
-      }
-      SpatialMap.render();
-    }
+    // 2D地图功能已移除，切换到2D时保持3D视图
+    if (container3d) container3d.style.display = 'block';
+    if (btn3d) btn3d.classList.add('active');
+    addLog('2D地图功能已移除，请使用3D视图', 'info');
   } else {
     if (container3d) container3d.style.display = 'block';
-    if (container2d) container2d.style.display = 'none';
     if (btn3d) btn3d.classList.add('active');
-    if (btn2d) btn2d.classList.remove('active');
   }
 }
-
-async function syncServerCaptureStatus() {
-  try {
-    const response = await fetch('/api/status');
-    const status = await response.json();
-    
-    const cameraStatusEl = document.getElementById('spatialCameraStatus');
-    if (cameraStatusEl) {
-      const isServerCamera = status.sourceName && status.sourceName.includes('ffmpeg');
-      const cameraText = isServerCamera ? '服务器摄像头' : '本地摄像头';
-      cameraStatusEl.innerHTML = '<span class="status-dot online"></span> ' + cameraText;
-    }
-    
-    if (status.isCapturing !== undefined) {
-      // 空间记忆的采集状态由前端独立管理
-    }
-  } catch (err) {
-    console.warn('[Spatial] 获取服务器状态失败:', err.message);
-  }
-}
-
-function initCamera() {
-  console.log('[Spatial] initCamera called, mode:', spatialCameraMode);
-  if (spatialCameraMode === 'server') {
-    switchToServerCamera();
-  } else {
-    switchToLocalCamera();
-  }
-}
-
-function switchToServerCamera() {
-  spatialCameraMode = 'server';
-  console.log('[Spatial] switchToServerCamera called');
-  const img = document.getElementById('spatialCameraImg');
-  const video = document.getElementById('spatialCameraVideo');
-  const placeholder = document.getElementById('spatialCameraPlaceholder');
-  const cameraStatusEl = document.getElementById('spatialCameraStatus');
-
-  if (spatialVideoStream) {
-    spatialVideoStream.getTracks().forEach(track => track.stop());
-    spatialVideoStream = null;
-  }
-
-  if (video) {
-    video.style.display = 'none';
-  }
-  if (img) {
-    img.style.display = 'block';
-    img.style.opacity = '0';
-    
-    img.onload = function() {
-      console.log('[Spatial] 服务器摄像头图片加载完成');
-      img.style.opacity = '1';
-      startServerCameraPolling();
-    };
-    
-    img.onerror = function() {
-      console.error('[Spatial] 服务器摄像头图片加载失败');
-      img.style.opacity = '1';
-      startServerCameraPolling();
-    };
-    
-    img.src = '/api/latest-frame?t=' + Date.now();
-  }
-  if (placeholder) {
-    placeholder.style.display = 'none';
-  }
-  if (cameraStatusEl) {
-    cameraStatusEl.innerHTML = '<span class="status-dot online"></span> 服务器摄像头';
-  }
-}
-
 async function switchToLocalCamera() {
-  spatialCameraMode = 'local';
   console.log('[Spatial] switchToLocalCamera called');
   const img = document.getElementById('spatialCameraImg');
   const video = document.getElementById('spatialCameraVideo');
@@ -3069,6 +3011,11 @@ async function switchToLocalCamera() {
     
     console.log('[Spatial] 已选择摄像头:', videoDevices.find(d => d.deviceId === selectedDeviceId)?.label || '未知设备');
     
+    const cameraStatusEl = document.getElementById('spatialCameraStatus');
+    if (cameraStatusEl) {
+      cameraStatusEl.innerHTML = '<span class="status-dot online"></span> 本地摄像头';
+    }
+    
   } catch (err) {
     console.error('[Spatial] 无法访问本地摄像头:', err);
     if (placeholder) {
@@ -3078,76 +3025,12 @@ async function switchToLocalCamera() {
   }
 }
 
-function toggleSpatialCamera() {
-  const btn = document.getElementById('spatialCameraToggleBtn');
-  const statusEl = document.getElementById('spatialCameraStatus');
-  if (spatialCameraMode === 'local') {
-    switchToServerCamera();
-    if (btn) btn.textContent = '🖥️ 切换本地';
-    if (statusEl) statusEl.innerHTML = '<span class="status-dot online"></span> 服务器摄像头';
-  } else {
-    switchToLocalCamera();
-    if (btn) btn.textContent = '🖥️ 切换服务器';
-    if (statusEl) statusEl.innerHTML = '<span class="status-dot online"></span> 本地摄像头';
-  }
-}
-
-function startServerCameraPolling() {
-  if (spatialServerPollTimer) {
-    clearInterval(spatialServerPollTimer);
-  }
-  const img = document.getElementById('spatialCameraImg');
-  if (!img) return;
-
-  spatialServerPollTimer = setInterval(() => {
-    if (spatialCameraMode === 'server') {
-      img.src = '/api/latest-frame?t=' + Date.now();
-    }
-  }, 100);
-}
-
 function captureCurrentFrameData() {
   var canvas = document.createElement('canvas');
   canvas.width = SPATIAL_FRAME_WIDTH;
   canvas.height = SPATIAL_FRAME_HEIGHT;
   var ctx = canvas.getContext('2d');
 
-  console.log('[Spatial] captureCurrentFrameData: 调用, spatialCameraMode=' + spatialCameraMode);
-
-  if (spatialCameraMode === 'server') {
-    var img = document.getElementById('spatialCameraImg');
-    
-    console.log('[Spatial] captureCurrentFrameData: 尝试从服务器摄像头采集');
-    console.log('[Spatial] captureCurrentFrameData: img元素存在=' + (!!img));
-    
-    if (!img) {
-      console.error('[Spatial] captureCurrentFrameData: spatialCameraImg 元素不存在');
-      return null;
-    }
-    
-    if (!img.complete) {
-      console.warn('[Spatial] captureCurrentFrameData: 图片未加载完成, complete=' + img.complete);
-      return null;
-    }
-    
-    if (!img.naturalWidth || img.naturalWidth === 0) {
-      console.warn('[Spatial] captureCurrentFrameData: 图片宽度为0, naturalWidth=' + img.naturalWidth + ', naturalHeight=' + img.naturalHeight);
-      return null;
-    }
-    
-    try {
-      ctx.drawImage(img, 0, 0, SPATIAL_FRAME_WIDTH, SPATIAL_FRAME_HEIGHT);
-      var dataUrl = canvas.toDataURL('image/jpeg', 0.6);
-      var base64 = dataUrl.split(',')[1];
-      console.log('[Spatial] captureCurrentFrameData: 采集成功, 数据长度=' + base64.length);
-      return { image: base64 };
-    } catch (e) {
-      console.error('[Spatial] captureCurrentFrameData: drawImage 失败:', e.message);
-      return null;
-    }
-  }
-
-  console.log('[Spatial] captureCurrentFrameData: 尝试从本地摄像头采集');
   var video = document.getElementById('spatialCameraVideo');
   console.log('[Spatial] captureCurrentFrameData: video元素存在=' + (!!video));
   console.log('[Spatial] captureCurrentFrameData: video.videoWidth=' + (video ? video.videoWidth : 'undefined'));
@@ -3169,17 +3052,34 @@ function captureCurrentFrameData() {
   }
 }
 
+/**
+ * 开始空间记忆采集
+ * 读取UI输入参数，启动API采集
+ */
 function startSpatialCapture() {
   console.log('[Spatial UI] startSpatialCapture 被调用');
   if (typeof SpatialApi !== 'undefined') {
     // 读取采集参数
     var fpsInput = document.getElementById('captureFpsInput');
     var frameCountInput = document.getElementById('captureFrameCountInput');
+    var maxImagesInput = document.getElementById('maxImagesInput');
     if (fpsInput && fpsInput.value) {
       spatialCaptureFps = parseInt(fpsInput.value) || 5;
     }
     if (frameCountInput && frameCountInput.value) {
       spatialCaptureTargetFrames = parseInt(frameCountInput.value) || 300;
+    }
+    if (maxImagesInput && maxImagesInput.value) {
+      spatialMaxImages = parseInt(maxImagesInput.value);
+      spatialCaptureTargetFrames = spatialMaxImages;
+      if (spatialMaxImages > 320) {
+        spatialKeyframeInterval = Math.floor((spatialMaxImages + 319) / 320);
+      } else {
+        spatialKeyframeInterval = 1;
+      }
+    } else {
+      spatialMaxImages = null;
+      spatialKeyframeInterval = 4;
     }
 
     SpatialApi.setCapturing(true);
@@ -3204,6 +3104,10 @@ function startSpatialCapture() {
   }
 }
 
+/**
+ * 停止空间记忆采集
+ * 通知API停止采集，更新按钮状态
+ */
 function stopSpatialCapture() {
   if (typeof SpatialApi !== 'undefined') {
     SpatialApi.setCapturing(false);
@@ -3216,27 +3120,86 @@ function stopSpatialCapture() {
     updateStepStatus('stepCapture', 'pending');
     updateStepStatus('stepProcessing', 'pending');
     updateStepStatus('step3D', 'pending');
+    hideCaptureProgress();
     
     addLog('空间记忆采集已停止', 'info');
   }
 }
 
-function updateWebSocketStatus(isConnected) {
-  const statusEl = document.getElementById('websocketStatus');
-  if (statusEl) {
-    statusEl.innerHTML = isConnected
-      ? '<span class="status-dot online"></span> RTX3090已连接'
-      : '<span class="status-dot offline"></span> RTX3090未连接';
+async function forceStopProcessing() {
+  addLog('正在强制停止处理...', 'info');
+  
+  if (typeof SpatialApi !== 'undefined') {
+    SpatialApi.setCapturing(false);
   }
+  
+  isFetchingFrames = false;
+  isBatchProcessing = false;
+  isInferenceStarted = false;
+  disableCameraFollow();
+  
+  if (spatialCaptureTimer) {
+    clearTimeout(spatialCaptureTimer);
+    spatialCaptureTimer = null;
+  }
+  
+  if (currentBatchId) {
+    try {
+      await fetch(`${BATCH_SERVER_URL}/batch/${currentBatchId}/force_stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batch_id: currentBatchId })
+      });
+    } catch (err) {
+      console.warn('强制停止请求失败:', err.message);
+    }
+  }
+  
+  var imgEl = document.getElementById('frameImagePreview');
+  var labelEl = document.getElementById('frameImageLabel');
+  if (imgEl) imgEl.style.display = 'none';
+  if (imgEl) imgEl.src = '';
+  if (labelEl) labelEl.style.display = 'none';
+  
+  currentCameraTargetPos = null;
+  currentCameraLookAt = null;
+  smoothedRawCamPos = null;
+  smoothedRawLookDir = null;
+  currentFollowFrameIndex = -1;
+  
+  totalFramesAvailable = 0;
+  currentFetchFrame = 0;
+  fetchBatchId = null;
+  spatialFrameCounter = 0;
+  totalFramesCollected = 0;
+  hideCaptureProgress();
+  currentBatchId = null;
+  isInitialBatch = true;
+  collectedFrames = [];
+  isUploading = false;
+  
+  const startBtn = document.getElementById('spatialStartCaptureBtn');
+  const stopBtn = document.getElementById('spatialStopCaptureBtn');
+  if (startBtn) startBtn.disabled = false;
+  if (stopBtn) stopBtn.disabled = true;
+  
+  updateStepStatus('stepCapture', 'pending');
+  updateStepStatus('stepProcessing', 'pending');
+  updateStepStatus('step3D', 'pending');
+  
+  addLog('处理已停止，已渲染的点云保留在窗口中', 'ok');
 }
 
+/**
+ * 初始化事件监听器
+ * 绑定所有UI按钮的点击事件、输入框变化事件等
+ */
 function initEventListeners() {
   const startBtn = document.getElementById('spatialStartCaptureBtn');
   const stopBtn = document.getElementById('spatialStopCaptureBtn');
-  const switchCameraBtn = document.getElementById('spatialCameraToggleBtn');
+  const forceStopBtn = document.getElementById('spatialForceStopBtn');
   const resetCameraBtn = document.getElementById('resetCameraBtn');
   const togglePcdBtn = document.getElementById('togglePointCloudBtn');
-  const cameraSelectBtns = document.querySelectorAll('.camera-source-btn');
 
   if (startBtn) {
     startBtn.addEventListener('click', startSpatialCapture);
@@ -3252,8 +3215,11 @@ function initEventListeners() {
     console.error('[Spatial] 停止采集按钮不存在，无法绑定事件');
   }
 
-  if (switchCameraBtn) {
-    switchCameraBtn.addEventListener('click', toggleSpatialCamera);
+  if (forceStopBtn) {
+    forceStopBtn.addEventListener('click', forceStopProcessing);
+    console.log('[Spatial] 结束处理按钮事件监听器已绑定');
+  } else {
+    console.error('[Spatial] 结束处理按钮不存在，无法绑定事件');
   }
 
   if (resetCameraBtn) {
@@ -3267,44 +3233,69 @@ function initEventListeners() {
       SpatialVisualizer.togglePointCloud();
     });
   }
-
-  cameraSelectBtns.forEach(btn => {
-    btn.addEventListener('click', () => {
-      const mode = btn.dataset.mode;
-      if (mode === 'local') {
-        switchToLocalCamera();
-      } else {
-        switchToServerCamera();
-      }
-    });
-  });
 }
 
+/**
+ * 切换视角到全局概览
+ */
 function resetViewToOverview() {
   SpatialVisualizer.setViewDirection([0.5, -0.6, 0.6]);
 }
 
+/**
+ * 切换视角到正前方
+ */
 function resetViewToFront() {
   SpatialVisualizer.setViewDirection([0.0, 0.0, 1.0]);
 }
 
+/**
+ * 切换视角到俯视图
+ */
 function resetViewToTop() {
   SpatialVisualizer.setViewDirection([0.0, -1.0, 0.0]);
 }
 
+/**
+ * 更新轨迹SVG（已废弃，保留占位）
+ */
 function updateTrajectorySvg() {}
 
+/**
+ * 设置GUI点云大小
+ * @param {number} value - 点云渲染尺寸
+ */
 function setGuiPointSize(value) {
   SpatialVisualizer.setPointSize(value);
 }
 
+/**
+ * 设置GUI相机显示开关
+ * @param {boolean} checked - 是否显示相机
+ */
 function setGuiShowCamera(checked) {
   SpatialVisualizer.setShowCamera(checked);
 }
 
+/**
+ * 设置GUI相机视锥体大小
+ * @param {number} value - 视锥体尺寸
+ */
 function setGuiCamSize(value) {
   SpatialVisualizer.setCamSize(value);
 }
+
+
+window.addEventListener('load', async () => {
+  if (document.getElementById('spatialCanvasContainer')) {
+    try {
+      await initSpatialMemory();
+      console.log('[Spatial] 初始化完成');
+    } catch (err) {
+      console.error('[Spatial] 初始化失败:', err);
+    }
+  }
+});
 
 function updateStepStatus(stepId, status) {
   const stepEl = document.getElementById(stepId + 'Status');
@@ -3323,71 +3314,12 @@ function updateStepStatus(stepId, status) {
   stepEl.textContent = statusText[status] || status;
 }
 
-function updateProgressDisplay(elementId, value) {
-  const el = document.getElementById(elementId);
-  if (el) {
-    el.textContent = value;
-  }
-  
-  const progressMap = {
-    'frameCount': { bar: 'captureProgressBar', percent: 'captureProgressPercent' },
-    'uploadProgress': { bar: 'uploadProgressBar', percent: 'uploadProgressPercent' },
-    'downloadProgress': { bar: 'downloadProgressBar', percent: 'downloadProgressPercent' }
-  };
-  
-  if (progressMap[elementId]) {
-    let numericValue = 0;
-    
-    if (elementId === 'frameCount') {
-      const parts = value.split('/');
-      if (parts.length === 2) {
-        const current = parseInt(parts[0]) || 0;
-        const total = parseInt(parts[1]) || 200;
-        numericValue = Math.round((current / total) * 100);
-      }
-    } else {
-      const percentValue = value.replace('%', '').trim();
-      numericValue = parseInt(percentValue) || 0;
-    }
-    
-    const barEl = document.getElementById(progressMap[elementId].bar);
-    if (barEl) {
-      barEl.style.width = numericValue + '%';
-    }
-    
-    const percentEl = document.getElementById(progressMap[elementId].percent);
-    if (percentEl) {
-      percentEl.textContent = numericValue + '%';
-    }
-  }
-}
-
-function updateBatchIdDisplay(batchId) {
-  const el = document.getElementById('batchIdDisplay');
-  if (el) {
-    el.textContent = batchId || '-';
-  }
-}
-
-window.addEventListener('load', async () => {
-  if (document.getElementById('spatialCanvasContainer')) {
-    try {
-      await initSpatialMemory();
-      console.log('[Spatial] 初始化完成');
-    } catch (err) {
-      console.error('[Spatial] 初始化失败:', err);
-    }
-  }
-});
-
 window.reset3DCamera = () => SpatialVisualizer.resetCamera();
 window.setViewDirection = (dir) => SpatialVisualizer.setViewDirection(dir);
 window.switchSpatialView = switchSpatialView;
-window.toggleSpatialCamera = toggleSpatialCamera;
 window.spatialStartCapture = startSpatialCapture;
 window.spatialStopCapture = stopSpatialCapture;
 window.addLog = addLog;
-window.updateWebSocketStatus = updateWebSocketStatus;
 window.updateStepStatus = updateStepStatus;
 window.togglePathVisibility = () => {};
 window.startTestProcess = startTestProcess;
@@ -3423,6 +3355,9 @@ let visualizationSettings = {
 let animationTimer = null;
 let cameraFrustumsVisible = true;
 
+/**
+ * 切换可视化控制面板显示/隐藏
+ */
 function toggleVisualizationControls() {
   const controls = document.getElementById('visualizationControls');
   if (controls) {
@@ -3430,42 +3365,67 @@ function toggleVisualizationControls() {
   }
 }
 
+/**
+ * 更新点云大小（UI控件调用）
+ * @param {number} value - 点云渲染尺寸
+ */
 function updatePointSize(value) {
   visualizationSettings.pointSize = parseFloat(value);
   document.getElementById('pointSizeValue').textContent = value;
   SpatialVisualizer.updatePointSize(value);
 }
 
+/**
+ * 切换相机可视化显示（UI复选框调用）
+ */
 function toggleCameraVisualization() {
   const checkbox = document.getElementById('showCameraCheckbox');
   visualizationSettings.showCamera = checkbox.checked;
   SpatialVisualizer.toggleCameraVisualization(checkbox.checked);
 }
 
+/**
+ * 更新相机视锥体大小（UI滑块调用）
+ * @param {number} value - 视锥体尺寸
+ */
 function updateCameraSize(value) {
   visualizationSettings.cameraSize = parseFloat(value);
   document.getElementById('cameraSizeValue').textContent = value;
   SpatialVisualizer.updateCameraSize(value);
 }
 
+/**
+ * 更新颜色模式（UI下拉框调用）
+ * @param {string} value - 颜色模式：'rgb'|'depth'|'frame'
+ */
 function updateColorMode(value) {
   visualizationSettings.colorMode = value;
   SpatialVisualizer.updateColorMode(value);
 }
 
+/**
+ * 更新置信度阈值（UI滑块调用）
+ * 过滤低于阈值的点云
+ * @param {number} value - 阈值（0-2）
+ */
 function updateConfThreshold(value) {
   guiConfThreshold = parseFloat(value);
   document.getElementById('confValue').textContent = value;
-  if (currentPointCloudData) {
-    updateAccumulatedPointCloud();
+  if (Object.keys(framePointCloudObjects).length > 0) {
+    rebuildAllFramePointClouds();
   }
 }
 
+/**
+ * 更新降采样步长（UI滑块调用）
+ * 每隔N个点取一个点，减少渲染点数
+ * @param {number} value - 步长（1-100）
+ */
 function updateDownsample(value) {
   guiDownsample = parseInt(value);
   document.getElementById('downsampleValue').textContent = value;
-  if (currentPointCloudData) {
-    updateAccumulatedPointCloud();
+  if (Object.keys(framePointCloudObjects).length > 0) {
+    rebuildAllFramePointClouds();
   }
 }
 
@@ -3489,50 +3449,18 @@ function updatePlaySpeed(value) {
 }
 
 function updateVisualizerCumulativeFrame(frameIndex) {
-  if (!pointCloud || frameRanges.length === 0) return;
+  if (Object.keys(framePointCloudObjects).length === 0) return;
 
   if (frameIndex < 0) {
-    updateAccumulatedPointCloud();
+    Object.keys(framePointCloudObjects).forEach(function(key) {
+      framePointCloudObjects[key].visible = true;
+    });
     return;
   }
 
-  const targetFrame = Math.min(frameIndex, frameRanges.length - 1);
-  const targetRange = frameRanges[targetFrame];
-  if (!targetRange) return;
-
-  const numPoints = targetRange.end;
-  const positions = currentPointCloudData.positions;
-  const colors = currentPointCloudData.colors;
-  const confs = currentPointCloudData.confs || new Float32Array(numPoints);
-
-  // 置信度过滤 + 降采样
-  const stride = Math.max(1, guiDownsample);
-  let filtered = [];
-  for (let i = 0; i < numPoints; i++) {
-    if (confs[i] >= guiConfThreshold) filtered.push(i);
-  }
-  let downsampled = [];
-  for (let k = 0; k < filtered.length; k += stride) {
-    downsampled.push(filtered[k]);
-  }
-
-  const visiblePositions = new Float32Array(downsampled.length * 3);
-  const visibleColors = new Float32Array(downsampled.length * 3);
-  for (let k = 0; k < downsampled.length; k++) {
-    const i = downsampled[k];
-    visiblePositions[k * 3] = positions[i * 3];
-    visiblePositions[k * 3 + 1] = positions[i * 3 + 1];
-    visiblePositions[k * 3 + 2] = positions[i * 3 + 2];
-    visibleColors[k * 3] = colors[i * 3];
-    visibleColors[k * 3 + 1] = colors[i * 3 + 1];
-    visibleColors[k * 3 + 2] = colors[i * 3 + 2];
-  }
-
-  pointCloud.geometry.setAttribute('position', new THREE.BufferAttribute(visiblePositions, 3));
-  pointCloud.geometry.setAttribute('color', new THREE.BufferAttribute(visibleColors, 3));
-  pointCloud.geometry.attributes.position.needsUpdate = true;
-  pointCloud.geometry.attributes.color.needsUpdate = true;
-  pointCloud.visible = true;
+  Object.keys(framePointCloudObjects).forEach(function(key) {
+    framePointCloudObjects[key].visible = (parseInt(key) <= frameIndex);
+  });
 
   highlightCurrentFrameFrustum(frameIndex);
 }
@@ -3545,12 +3473,15 @@ function playAnimation() {
   visualizationSettings._savedPointSize = guiPointSize;
   visualizationSettings._savedDownsample = guiDownsample;
   guiPointSize = 0.001;
-  guiDownsample = 19;
+  guiDownsample = 1;
   if (pointCloud) pointCloud.material.size = 0.001;
+  Object.keys(framePointCloudObjects).forEach(function(key) {
+    framePointCloudObjects[key].material.size = 0.001;
+  });
   document.getElementById('pointSizeSlider').value = '0.001';
   document.getElementById('pointSizeValue').textContent = '0.001';
-  document.getElementById('downsampleSlider').value = '19';
-  document.getElementById('downsampleValue').textContent = '19';
+  document.getElementById('downsampleSlider').value = '1';
+  document.getElementById('downsampleValue').textContent = '1';
 
   const frameSlider = document.getElementById('frameSlider');
   const maxFrame = parseInt(frameSlider.max);
@@ -3598,6 +3529,9 @@ function restoreAnimationParams() {
     guiPointSize = visualizationSettings._savedPointSize;
     guiDownsample = visualizationSettings._savedDownsample;
     if (pointCloud) pointCloud.material.size = guiPointSize;
+    Object.keys(framePointCloudObjects).forEach(function(key) {
+      framePointCloudObjects[key].material.size = guiPointSize;
+    });
     document.getElementById('pointSizeSlider').value = String(guiPointSize);
     document.getElementById('pointSizeValue').textContent = String(guiPointSize);
     document.getElementById('downsampleSlider').value = String(guiDownsample);
@@ -3798,4 +3732,4 @@ function showManifestInfo() {
   
   alert(info);
   console.log('Manifest:', manifestData);
-}
+} ``
