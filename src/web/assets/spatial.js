@@ -805,7 +805,7 @@ let frameTime = 0;
 // 帧计数器
 let frameCount = 0;
 // GUI：降采样步长
-let guiDownsample = 10;
+let guiDownsample = 3;  // matches viser LivePointCloudViewer default
 /** GUI: point cloud point size (matches viser default) */
 let guiPointSize = 0.00001;
 /** GUI: confidence threshold for point filtering (same as viser default) */
@@ -876,19 +876,10 @@ async function init3DScene() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-  // 添加网格辅助线
-  const gridHelper = new THREE.GridHelper(20, 20, 0xaaaaaa, 0xcccccc);
-  scene.add(gridHelper);
-
-  // 添加世界坐标轴（Viser 风格：红X、绿Y、蓝Z）
-  const worldAxes = new THREE.AxesHelper(1.0);
-  worldAxes.material.linewidth = 3;
-  scene.add(worldAxes);
-
-  // 创建点云几何体和材质
+  // 创建点云几何体和材质（兼容旧批次模式）
   const pointCloudGeometry = new THREE.BufferGeometry();
   const pointCloudMaterial = new THREE.PointsMaterial({
-    size: 0.001,
+    size: 0.00001,
     vertexColors: true,
     sizeAttenuation: true,
     transparent: false,
@@ -1069,32 +1060,6 @@ function fitCameraToScene() {
     camera3d.near = Math.max(0.01, sceneScale * 0.001);
     camera3d.far = Math.max(100, sceneScale * 10);
     camera3d.updateProjectionMatrix();
-  }
-
-  // Dynamically resize grid and axes helper
-  if (sceneScale > 0) {
-    var gridSize = Math.pow(10, Math.ceil(Math.log10(sceneScale)));
-    scene.children.forEach(function(child) {
-      if (child.isGridHelper) {
-        scene.remove(child);
-        if (child.geometry) child.geometry.dispose();
-        if (child.material) child.material.dispose();
-      }
-    });
-    var gridHelper = new THREE.GridHelper(gridSize, Math.round(gridSize), 0xaaaaaa, 0xcccccc);
-    scene.add(gridHelper);
-
-    scene.children.forEach(function(child) {
-      if (child.isAxesHelper) {
-        scene.remove(child);
-        if (child.geometry) child.geometry.dispose();
-        if (child.material) child.material.dispose();
-      }
-    });
-    var axesSize = Math.pow(10, Math.floor(Math.log10(sceneScale * 0.5)));
-    var worldAxes = new THREE.AxesHelper(Math.max(0.1, axesSize));
-    worldAxes.material.linewidth = 3;
-    scene.add(worldAxes);
   }
 
   addLog("Camera fitted: center=[" + sceneCenter.map(function(v) { return v.toFixed(2); }).join(",") + "], scale=" + sceneScale.toFixed(2), "ok");
@@ -1362,8 +1327,10 @@ function updateTrajectoryLine() {
     trajectoryPoints.push(new THREE.Vector3(t[0], t[1], t[2]));
   }
   
-  const trajectoryGeom = new THREE.BufferGeometry().setFromPoints(trajectoryPoints);
-  const trajectoryMat = new THREE.LineBasicMaterial({ color: 0xff3333, linewidth: 2, transparent: true, opacity: 1.0 });
+  const curve = new THREE.CatmullRomCurve3(trajectoryPoints);
+  const curvePoints = curve.getPoints(validCameras.length * 3);
+  const trajectoryGeom = new THREE.BufferGeometry().setFromPoints(curvePoints);
+  const trajectoryMat = new THREE.LineBasicMaterial({ color: 0x78c878, linewidth: 3, transparent: true, opacity: 1.0 });
   cameraTrajectoryLine = new THREE.Line(trajectoryGeom, trajectoryMat);
   frustumGroup.add(cameraTrajectoryLine);
 }
@@ -1840,6 +1807,37 @@ function addFramePointCloudToScene(frameIndex) {
     end: startIdx + count
   };
 
+  // Sliding window: trim oldest frames when exceeding viser limit (300)
+  const maxFrames = 300;
+  const frameIndices = Object.keys(frameRanges).map(Number).sort((a,b) => a-b);
+  if (frameIndices.length > maxFrames) {
+    const removeCount = frameIndices.length - maxFrames;
+    const toRemove = frameIndices.slice(0, removeCount);
+    let removedPoints = 0;
+    for (const idx of toRemove) {
+      const range = frameRanges[idx];
+      if (range) {
+        removedPoints += (range.end - range.start);
+      }
+    }
+    // Remove from accumulated arrays
+    if (removedPoints > 0 && removedPoints <= accumulatedPoints.length / 3) {
+      const keepStart = removedPoints * 3;
+      accumulatedPoints = accumulatedPoints.slice(keepStart);
+      accumulatedColors = accumulatedColors.slice(keepStart);
+      // Adjust remaining frame ranges
+      for (const idx of frameIndices.slice(removeCount)) {
+        if (frameRanges[idx]) {
+          frameRanges[idx].start -= removedPoints;
+          frameRanges[idx].end -= removedPoints;
+        }
+      }
+    }
+    for (const idx of toRemove) {
+      delete frameRanges[idx];
+    }
+  }
+
   // 更新单一点云对象
   updateMergedPointCloud();
 
@@ -2177,8 +2175,8 @@ function buildFrustumsFromCamerasData(camData) {
     const yAxis = new THREE.Vector3(R[0][1], R[1][1], R[2][1]);
     const zAxis = new THREE.Vector3(R[0][2], R[1][2], R[2][2]);
     
-    const axisLen = 0.1;
-    const axisRadius = 0.004;
+    const axisLen = 0.05;
+    const axisRadius = 0.002;
     
     // X 轴（红色）
     const xGeom = new THREE.CylinderGeometry(axisRadius, axisRadius, axisLen, 8);
@@ -2213,7 +2211,7 @@ function buildFrustumsFromCamerasData(camData) {
     cameraFrustums.push(zAxisMesh);
     
     // 相机中心点
-    const centerGeom = new THREE.SphereGeometry(0.0075, 8, 8);
+    const centerGeom = new THREE.SphereGeometry(0.002, 8, 8);
     const centerMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
     const centerMesh = new THREE.Mesh(centerGeom, centerMat);
     centerMesh.position.copy(camPos);
