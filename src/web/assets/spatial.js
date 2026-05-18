@@ -68,8 +68,6 @@ var isUploading = false;
 var isInferenceStarted = false;
 
 // ============== API 回调函数 ==============
-/** 点云数据更新回调 */
-var onPointCloudUpdate = null;
 /** 日志消息回调 */
 var onLogMessage = null;
 /** 状态更新回调 */
@@ -87,12 +85,10 @@ window.SpatialVisualizer = {};
  * 设置API回调函数
  * 供外部模块注册事件处理函数
  * @param {Object} callbacks - 回调函数对象
- * @param {Function} callbacks.onPointCloudUpdate - 点云数据更新时的回调
  * @param {Function} callbacks.onLogMessage - 日志消息输出时的回调
  * @param {Function} callbacks.onStatusUpdate - 采集状态变化时的回调
  */
 function setSpatialApiCallbacks(callbacks) {
-  if (callbacks.onPointCloudUpdate) onPointCloudUpdate = callbacks.onPointCloudUpdate;
   if (callbacks.onLogMessage) onLogMessage = callbacks.onLogMessage;
   if (callbacks.onStatusUpdate) onStatusUpdate = callbacks.onStatusUpdate;
 }
@@ -355,38 +351,8 @@ async function startStreamingInference(batchId) {
   }
 }
 
-/**
- * 提交批次进行处理
- * 等待上传完成后，调用processBatch()启动服务器端点云重建
- */
-function submitBatch() {
-  if (isBatchProcessing || totalFramesCollected < spatialCaptureTargetFrames || !currentBatchId) {
-    console.log('[Spatial API] submitBatch: 跳过, isBatchProcessing=' + isBatchProcessing + ', totalFramesCollected=' + totalFramesCollected);
-    return;
-  }
-
-  console.log('[Spatial API] submitBatch: 提交批次 ' + currentBatchId);
-  isBatchProcessing = true;
-  
-  // 停止采集定时器，防止继续采集
-  if (spatialCaptureTimer) {
-    clearTimeout(spatialCaptureTimer);
-    spatialCaptureTimer = null;
-  }
-  spatialIsCapturing = false;
-  
-  // 等待上传完成后上传剩余帧并提交处理
-  waitForUploadReady(function() {
-    if (collectedFrames.length > 0) {
-      uploadFramesToBatchServer(currentBatchId, collectedFrames).then(() => {
-        collectedFrames = [];
-        processBatch();
-      });
-    } else {
-      processBatch();
-    }
-  });
-}
+/** 外部注入的帧采集函数引用 */
+var captureCurrentFrame = null;
 
 /**
  * 设置帧采集函数
@@ -489,12 +455,24 @@ async function fetchAndRenderFrame(batchId, frameIndex) {
     
     const pointCloudData = await pointCloudResponse.json();
     
-    if (!pointCloudData.success || !pointCloudData.point_cloud) {
+    if (!pointCloudData.success) {
       console.warn(`[Spatial] 帧 ${frameIndex} 无点云数据`);
       return;
     }
     
-    const { points, colors, confs } = pointCloudData.point_cloud;
+    var points_b64 = pointCloudData.points_b64;
+    var colors_b64 = pointCloudData.colors_b64;
+    var confs_b64 = pointCloudData.confs_b64;
+    var total_points = pointCloudData.total_points || 0;
+
+    if (!points_b64) {
+      console.warn("[Spatial] frame " + frameIndex + " missing points_b64");
+      return;
+    }
+
+    var points = base64ToFloat32Array(points_b64);
+    var colors = colors_b64 ? base64ToFloat32Array(colors_b64) : new Float32Array(total_points * 3).fill(0.5);
+    var confs = confs_b64 ? base64ToFloat32Array(confs_b64) : new Float32Array(total_points).fill(1.0);
     
     // ✅ 获取相机位姿
     const cameraResponse = await fetch(`${BATCH_SERVER_URL}/batch/${batchId}/frame/${frameIndex}/camera`);
@@ -625,120 +603,6 @@ async function uploadFramesToBatchServer(batchId, frames) {
 }
 
 /**
- * 处理批次生成点云
- * 向服务器发送处理请求，启动3D重建流程，轮询日志并等待完成
- * @param {string} batchId - 批次号
- * @returns {Promise<Object>} 处理结果 {success, total_points, num_frames}
- */
-async function processBatchInServer(batchId) {
-  isBatchProcessing = true;
-  
-  updateStepStatus('stepCapture', 'done');
-  updateStepStatus('stepUpload', 'active');
-  updateStepStatus('stepProcessing', 'pending');
-  updateStepStatus('stepDownload', 'pending');
-  updateStepStatus('step3D', 'pending');
-  updateProgressDisplay('uploadProgress', '上传中...');
-  
-  let logPollTimer = null;
-  let lastLogCount = 0;
-  
-  const pollLogs = async () => {
-    try {
-      const logResponse = await fetch(`${BATCH_SERVER_URL}/batch/${batchId}/logs`);
-      if (logResponse.ok) {
-        const logData = await logResponse.json();
-        const logs = logData.logs || [];
-        
-        if (logs.length > lastLogCount) {
-          const newLogs = logs.slice(lastLogCount);
-          newLogs.forEach(log => {
-            addLog(log.message, log.type);
-          });
-          lastLogCount = logs.length;
-        }
-      }
-    } catch (err) {
-      console.error('获取日志失败:', err);
-    }
-  };
-  
-  logPollTimer = setInterval(pollLogs, 1000);
-  
-  try {
-    addLog('开始批次处理请求: ' + batchId);
-    
-    updateProgressDisplay('uploadProgress', '上传帧数据...');
-    const response = await fetch(`${BATCH_SERVER_URL}/batch/${batchId}/process`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ batch_id: batchId, confidence_threshold: 0.1 })
-    });
-    
-    updateProgressDisplay('uploadProgress', '100%');
-    updateStepStatus('stepUpload', 'done');
-    addLog('收到响应, status: ' + response.status);
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      addLog('请求失败: ' + errorText, 'err');
-      updateStepStatus('stepProcessing', 'error');
-      clearInterval(logPollTimer);
-      return { success: false, error: errorText };
-    }
-    
-    updateStepStatus('stepProcessing', 'active');
-    updateProgressDisplay('processProgress', '处理中...');
-    const result = await response.json();
-    addLog('JSON解析成功');
-    addLog('result.success: ' + result.success);
-    addLog('result.total_points: ' + result.total_points);
-    
-    if (result.success) {
-      updateProgressDisplay('processProgress', '100%');
-      updateStepStatus('stepProcessing', 'done');
-      addLog(`批次处理完成: ${result.total_points} 点, ${result.num_frames} 帧`, 'ok');
-      
-      updateStepStatus('stepDownload', 'active');
-      updateProgressDisplay('downloadProgress', '逐帧拉取点云...');
-      addLog('开始逐帧拉取点云数据...');
-      
-      updateStepStatus('step3D', 'active');
-      
-      const totalFrames = result.num_frames || 0;
-      if (totalFrames > 0 && typeof SpatialVisualizer !== 'undefined' && SpatialVisualizer.startFrameByFrameFetch) {
-        await SpatialVisualizer.startFrameByFrameFetch(batchId, totalFrames);
-        updateProgressDisplay('downloadProgress', '100%');
-        updateStepStatus('stepDownload', 'done');
-        updateStepStatus('step3D', 'done');
-        addLog('逐帧点云拉取完成', 'ok');
-      } else {
-        addLog('无法启动逐帧拉取: totalFrames=' + totalFrames, 'err');
-        updateStepStatus('stepDownload', 'error');
-        updateStepStatus('step3D', 'error');
-      }
-      
-      clearInterval(logPollTimer);
-      return { success: true, total_points: result.total_points, num_frames: totalFrames };
-    } else {
-      addLog('批次处理失败: ' + (result.error || 'unknown'), 'err');
-      updateStepStatus('stepProcessing', 'error');
-      clearInterval(logPollTimer);
-      return result;
-    }
-  } catch (err) {
-    addLog('批次处理请求失败: ' + err.message, 'err');
-    console.error('批次处理详细错误:', err);
-    updateStepStatus('stepProcessing', 'error');
-    clearInterval(logPollTimer);
-    return { success: false, error: err.message };
-  } finally {
-    clearInterval(logPollTimer);
-    isBatchProcessing = false;
-  }
-}
-
-/**
  * 获取批次状态
  * @param {string} batchId - 批次号
  * @returns {Promise<Object|null>} 批次状态信息
@@ -795,7 +659,6 @@ window.SpatialApi = {
   // 批次服务相关
   generateBatchId: generateBatchId,
   uploadFrames: uploadFramesToBatchServer,
-  processBatch: processBatchInServer,
   getBatchStatus: getBatchStatus,
   getPointCloud: getBatchPointCloud,
   checkBatchServerStatus: checkBatchServerStatus
@@ -834,12 +697,11 @@ let visualizerStats = { fps: 0, vertices: 0 };
 let frameTime = 0;
 // 帧计数器
 let frameCount = 0;
-// GUI：点云大小（与 live_camera.py 一致）
-let guiPointSize = 0.001;
-// GUI：是否显示相机
+// GUI：降采样步长
+let guiPointSize = 0.00001;
 let guiShowCamera = true;
-// GUI：相机视锥体大小
 let guiCamSize = 0.05;
+let guiDownsample = 5;
 // 统计信息更新回调
 let onStatsUpdate = null;
 
@@ -898,7 +760,7 @@ async function init3DScene() {
   canvas.height = height;
   
   // 创建透视相机
-  camera3d = new THREE.PerspectiveCamera(60, width / height, 0.001, 10000);
+  camera3d = new THREE.PerspectiveCamera(60, width / height, 0.1, 10000);
   camera3d.position.set(0, 0, 5);
   camera3d.lookAt(0, 0, 0);
   camera3d.up.set(0, 1, 0);
@@ -937,7 +799,7 @@ async function init3DScene() {
   frustumGroup = new THREE.Group();
   cloudGroup.scale.set(-1, -1, 1);
   frustumGroup.scale.set(-1, -1, 1);
-  cloudGroup.add(pointCloud);
+  // pointCloud kept as reference; mergedPointCloud handles all rendering
   scene.add(cloudGroup);
   scene.add(frustumGroup);
 
@@ -1035,195 +897,6 @@ function animate() {
   renderer.render(scene, camera3d);
 }
 
-/**
- * 更新3D场景数据
- * 接收点云数据和相机位姿，更新Three.js场景中的点云渲染和相机可视化
- * @param {Object} data - 场景数据
- * @param {number[]|Float32Array} data.points - 点云坐标（扁平数组或嵌套数组）
- * @param {number[]|Float32Array} data.colors - 点云颜色（0-1范围RGB）
- * @param {Object[]} data.cameraPoses - 相机位姿数组
- * @param {number[]} data.sceneCenter - 场景中心坐标
- * @param {string} data.batchId - 批次号
- */
-function updateScene(data) {
-  if (!THREE || !scene || !pointCloud) {
-    console.error('[Spatial Visualizer] Scene not initialized properly');
-    console.error('[Spatial Visualizer] THREE:', !!THREE, 'scene:', !!scene, 'pointCloud:', !!pointCloud);
-    return;
-  }
-
-  const { points, colors, cameraPoses, sceneCenter: sceneCenterFromData, batchId } = data;
-
-  console.log('[Spatial Visualizer] ========== updateScene called ==========');
-  console.log('[Spatial Visualizer] points type:', typeof points, 'isArray:', Array.isArray(points));
-  console.log('[Spatial Visualizer] points length:', points ? points.length : 'null/undefined');
-  console.log('[Spatial Visualizer] colors length:', colors ? colors.length : 'null/undefined');
-  console.log('[Spatial Visualizer] cameraPoses length:', cameraPoses ? cameraPoses.length : 'null/undefined');
-  console.log('[Spatial Visualizer] batchId:', batchId);
-
-  if (!points || points.length === 0) {
-    pointCloud.visible = false;
-    console.error('[Spatial Visualizer] No points to render');
-    addLog('点云数据为空，无法渲染', 'err');
-    return;
-  }
-
-  addLog('开始处理点云数据，原始长度: ' + points.length, 'info');
-
-  let flatPoints;
-  if (Array.isArray(points) && points.length > 0 && Array.isArray(points[0])) {
-    flatPoints = [];
-    for (const point of points) {
-      flatPoints.push(...point);
-    }
-    addLog('点云格式: 嵌套数组, 扁平化后长度: ' + flatPoints.length);
-  } else {
-    flatPoints = points;
-    addLog('点云格式: 扁平数组, 长度: ' + flatPoints.length);
-  }
-
-  const numPoints = flatPoints.length / 3;
-  addLog('点云数量: ' + numPoints + ' 个点', 'ok');
-  
-  let positions;
-  if (flatPoints instanceof Float32Array) {
-    positions = new Float32Array(flatPoints);
-  } else {
-    positions = new Float32Array(flatPoints);
-  }
-
-  // Recenter point cloud to scene center (like Viser does)
-  let recenterX = 0, recenterY = 0, recenterZ = 0;
-  if (sceneCenterFromData && sceneCenterFromData.length === 3) {
-    recenterX = sceneCenterFromData[0];
-    recenterY = sceneCenterFromData[1];
-    recenterZ = sceneCenterFromData[2];
-  } else if (sceneCenter && sceneCenter.length === 3) {
-    recenterX = sceneCenter[0];
-    recenterY = sceneCenter[1];
-    recenterZ = sceneCenter[2];
-  }
-  
-  if (recenterX !== 0 || recenterY !== 0 || recenterZ !== 0) {
-    for (let i = 0; i < numPoints; i++) {
-      positions[i * 3]     -= recenterX;
-      positions[i * 3 + 1] -= recenterY;
-      positions[i * 3 + 2] -= recenterZ;
-    }
-    addLog('点云已重新居中到场景中心', 'ok');
-  }
-
-  console.log('[Spatial Visualizer] Positions array created, length:', positions.length);
-
-  const colorsOut = new Float32Array(flatPoints.length);
-
-  if (colors && colors.length > 0) {
-    let flatColors;
-    if (Array.isArray(colors[0])) {
-      flatColors = [];
-      for (const color of colors) {
-        flatColors.push(...color);
-      }
-    } else {
-      flatColors = colors;
-    }
-
-    const colorLen = Math.min(flatColors.length, flatPoints.length);
-    for (let i = 0; i < colorLen; i++) {
-      colorsOut[i] = Math.max(0, Math.min(1, flatColors[i]));
-    }
-    for (let i = colorLen; i < colorsOut.length; i += 3) {
-      colorsOut[i] = 0.5;
-      colorsOut[i + 1] = 0.5;
-      colorsOut[i + 2] = 0.5;
-    }
-    addLog('颜色数据已处理，长度: ' + colorLen);
-  } else {
-    for (let i = 0; i < colorsOut.length; i += 3) {
-      colorsOut[i] = 0.5;
-      colorsOut[i + 1] = 0.5;
-      colorsOut[i + 2] = 0.5;
-    }
-    addLog('使用默认灰色颜色');
-  }
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geometry.setAttribute('color', new THREE.BufferAttribute(colorsOut, 3));
-
-  if (pointCloud.geometry) {
-    pointCloud.geometry.dispose();
-  }
-  pointCloud.geometry = geometry;
-
-  console.log('[Spatial Visualizer] Geometry created and assigned to pointCloud');
-
-  geometry.computeBoundingBox();
-  const bbox = geometry.boundingBox;
-  console.log('[Spatial Visualizer] Bounding box:', bbox);
-
-  const center = new THREE.Vector3();
-  bbox.getCenter(center);
-  const size = new THREE.Vector3();
-  bbox.getSize(size);
-  const maxDim = Math.max(size.x, size.y, size.z, 0.001);
-
-  console.log('[Spatial Visualizer] Center:', center);
-  console.log('[Spatial Visualizer] Size:', size);
-  console.log('[Spatial Visualizer] Max dimension:', maxDim);
-
-  const autoPointSize = Math.max(0.001, maxDim * 0.005);
-  const finalPointSize = guiPointSize > 0 ? guiPointSize : autoPointSize;
-  
-  console.log('[Spatial Visualizer] Point size:', finalPointSize);
-  
-  pointCloud.material.size = finalPointSize;
-  pointCloud.material.vertexColors = true;
-  pointCloud.material.sizeAttenuation = true;
-  pointCloud.material.transparent = false;
-  pointCloud.material.opacity = 1.0;
-  pointCloud.material.depthWrite = true;
-  pointCloud.material.depthTest = true;
-  pointCloud.visible = true;
-
-  console.log('[Spatial Visualizer] PointCloud visible:', pointCloud.visible);
-  console.log('[Spatial Visualizer] PointCloud in scene:', scene.children.includes(pointCloud));
-
-  if (camera3d && window.controls) {
-    const distance = maxDim * 2;
-    camera3d.position.set(
-      center.x + distance * 0.7,
-      center.y + distance * 0.5,
-      center.z + distance * 0.7
-    );
-    camera3d.lookAt(center);
-    window.controls.target.copy(center);
-    window.controls.update();
-    
-    console.log('[Spatial Visualizer] Camera position:', camera3d.position);
-    console.log('[Spatial Visualizer] Camera looking at:', center);
-  }
-
-  visualizerStats.vertices = numPoints;
-  if (onStatsUpdate) {
-    onStatsUpdate({ vertices: visualizerStats.vertices });
-  }
-
-  if (guiShowCamera && cameraPoses && cameraPoses.length > 0) {
-    updateCameraTrajectory(cameraPoses);
-    updateCameraFrustums(cameraPoses);
-  }
-
-  const overlay = document.getElementById('canvasOverlay');
-  if (overlay) {
-    overlay.style.display = 'none';
-    console.log('[Spatial Visualizer] Overlay hidden');
-  }
-
-  addLog('点云渲染完成，' + numPoints + ' 个点', 'ok');
-  console.log('[Spatial Visualizer] ========== updateScene completed ==========');
-}
-
 function updateCameraTrajectory(cameraPoses) {
   if (!THREE || !scene || !cameraPoses || cameraPoses.length < 2) return;
 
@@ -1243,7 +916,7 @@ function updateCameraTrajectory(cameraPoses) {
 
   const curve = new THREE.CatmullRomCurve3(points);
   const numSegments = Math.max(20, points.length * 2);
-  const tubeRadius = Math.max(0.005, guiCamSize * 0.1);
+  const tubeRadius = 0.005;
   const geometry = new THREE.TubeGeometry(curve, numSegments, tubeRadius, 8, false);
 
   const colors = [];
@@ -1281,7 +954,7 @@ function updateCameraFrustums(cameraPoses) {
   });
   cameraFrustums = [];
 
-  if (!guiShowCamera || !cameraPoses || cameraPoses.length === 0) return;
+  if (!cameraPoses || cameraPoses.length === 0) return;
 
   // 绘制相机轨迹线
   if (cameraPoses.length > 1) {
@@ -1319,8 +992,8 @@ function updateCameraFrustums(cameraPoses) {
       const yAxis = new THREE.Vector3(-R[0][1], -R[1][1], R[2][1]);
       const zAxis = new THREE.Vector3(-R[0][2], -R[1][2], R[2][2]);
 
-      const axisLen = guiCamSize * 2;
-      const axisRadius = guiCamSize * 0.08;
+      const axisLen = 0.1;
+      const axisRadius = 0.004;
 
       // X 轴（红色）
       const xGeom = new THREE.CylinderGeometry(axisRadius, axisRadius, axisLen, 8);
@@ -1355,7 +1028,7 @@ function updateCameraFrustums(cameraPoses) {
       cameraFrustums.push(zAxisMesh);
 
       // 相机中心点
-      const centerGeom = new THREE.SphereGeometry(guiCamSize * 0.15, 8, 8);
+      const centerGeom = new THREE.SphereGeometry(0.0075, 8, 8);
       const centerMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
       const centerMesh = new THREE.Mesh(centerGeom, centerMat);
       centerMesh.position.copy(camPos);
@@ -1365,7 +1038,7 @@ function updateCameraFrustums(cameraPoses) {
       // 没有旋转数据时，只显示位置标记（兼容旧数据）
       const hue = (index / cameraPoses.length) * 0.8 + 0.15;
       const markerColor = new THREE.Color().setHSL(hue, 0.8, 0.6);
-      const markerGeom = new THREE.SphereGeometry(guiCamSize * 0.3, 12, 12);
+      const markerGeom = new THREE.SphereGeometry(0.015, 12, 12);
       const markerMat = new THREE.MeshBasicMaterial({ color: markerColor, transparent: true, opacity: 0.9 });
       const marker = new THREE.Mesh(markerGeom, markerMat);
       marker.position.copy(camPos);
@@ -1378,8 +1051,9 @@ function updateCameraFrustums(cameraPoses) {
 function reset3DCamera() {
   if (!camera3d || !window.controls) return;
 
-  if (pointCloud && pointCloud.geometry && pointCloud.geometry.attributes.position) {
-    const bbox = new THREE.Box3().setFromObject(pointCloud);
+  var activeCloud = mergedPointCloud || pointCloud;
+  if (activeCloud && activeCloud.geometry && activeCloud.geometry.attributes.position) {
+    const bbox = new THREE.Box3().setFromObject(activeCloud);
     const center = new THREE.Vector3();
     bbox.getCenter(center);
     const size = new THREE.Vector3();
@@ -1394,12 +1068,72 @@ function reset3DCamera() {
     camera3d.lookAt(center);
     window.controls.target.copy(center);
   } else {
-    camera3d.position.set(3, 2, 3);
-    camera3d.lookAt(0, 0, 0);
-    window.controls.target.set(0, 0, 0);
+    if (sceneScale > 0) {
+      fitCameraToScene();
+    } else {
+      camera3d.position.set(3, 2, 3);
+      camera3d.lookAt(0, 0, 0);
+      window.controls.target.set(0, 0, 0);
+    }
   }
   window.controls.update();
 }
+
+/**
+ * Use backend-provided sceneCenter and sceneScale to position camera.
+ * Called after fetchMetadata completes.
+ */
+function fitCameraToScene() {
+  if (!camera3d || !window.controls) return;
+
+  var center = new THREE.Vector3(sceneCenter[0], sceneCenter[1], sceneCenter[2]);
+  var dist = Math.max(sceneScale * 1.5, 1.0);
+
+  camera3d.position.set(
+    center.x + dist * 0.7,
+    center.y + dist * 0.5,
+    center.z + dist * 0.7
+  );
+  camera3d.lookAt(center);
+  window.controls.target.copy(center);
+  window.controls.update();
+
+  // Dynamically adjust camera near/far based on scene scale
+  if (sceneScale > 0) {
+    camera3d.near = Math.max(0.01, sceneScale * 0.001);
+    camera3d.far = Math.max(100, sceneScale * 10);
+    camera3d.updateProjectionMatrix();
+  }
+
+  // Dynamically resize grid and axes helper
+  if (sceneScale > 0) {
+    var gridSize = Math.pow(10, Math.ceil(Math.log10(sceneScale)));
+    scene.children.forEach(function(child) {
+      if (child.isGridHelper) {
+        scene.remove(child);
+        if (child.geometry) child.geometry.dispose();
+        if (child.material) child.material.dispose();
+      }
+    });
+    var gridHelper = new THREE.GridHelper(gridSize, Math.round(gridSize), 0xaaaaaa, 0xcccccc);
+    scene.add(gridHelper);
+
+    scene.children.forEach(function(child) {
+      if (child.isAxesHelper) {
+        scene.remove(child);
+        if (child.geometry) child.geometry.dispose();
+        if (child.material) child.material.dispose();
+      }
+    });
+    var axesSize = Math.pow(10, Math.floor(Math.log10(sceneScale * 0.5)));
+    var worldAxes = new THREE.AxesHelper(Math.max(0.1, axesSize));
+    worldAxes.material.linewidth = 3;
+    scene.add(worldAxes);
+  }
+
+  addLog("Camera fitted: center=[" + sceneCenter.map(function(v) { return v.toFixed(2); }).join(",") + "], scale=" + sceneScale.toFixed(2), "ok");
+}
+
 
 function setViewDirection(direction) {
   if (!camera3d || !window.controls) return;
@@ -1407,8 +1141,9 @@ function setViewDirection(direction) {
   let center = new THREE.Vector3(0, 0, 0);
   let scale = 3;
 
-  if (pointCloud && pointCloud.geometry && pointCloud.geometry.attributes.position) {
-    const bbox = new THREE.Box3().setFromObject(pointCloud);
+  var activeCloud = mergedPointCloud || pointCloud;
+  if (activeCloud && activeCloud.geometry && activeCloud.geometry.attributes.position) {
+    const bbox = new THREE.Box3().setFromObject(activeCloud);
     bbox.getCenter(center);
     const size = new THREE.Vector3();
     bbox.getSize(size);
@@ -1484,38 +1219,6 @@ function setVisualizerCallbacks(callbacks) {
 }
 
 /**
- * 设置点云大小
- * @param {number} value - 点云渲染尺寸
- */
-function setGuiPointSize(value) {
-  guiPointSize = parseFloat(value);
-  // 更新单一点云对象的点大小
-  if (mergedPointCloud) {
-    mergedPointCloud.material.size = guiPointSize;
-  }
-}
-
-/**
- * 设置是否显示相机视锥体
- * @param {boolean} value - 是否显示
- */
-function setGuiShowCamera(value) {
-  guiShowCamera = value;
-}
-
-/**
- * 设置相机视锥体大小
- * @param {number} value - 视锥体尺寸
- */
-/**
- * 设置相机视锥体大小
- * @param {number} value - 视锥体尺寸
- */
-function setGuiCamSize(value) {
-  guiCamSize = parseFloat(value);
-}
-
-/**
  * 获取WebGL渲染器
  * @returns {THREE.WebGLRenderer} 渲染器对象
  */
@@ -1551,9 +1254,10 @@ function getCurrentSceneData() {
     cameraPoses: []
   };
 
-  if (pointCloud && pointCloud.geometry && pointCloud.geometry.attributes.position) {
-    var posAttr = pointCloud.geometry.attributes.position;
-    var colAttr = pointCloud.geometry.attributes.color;
+  var activeCloud = mergedPointCloud || pointCloud;
+  if (activeCloud && activeCloud.geometry && activeCloud.geometry.attributes.position) {
+    var posAttr = activeCloud.geometry.attributes.position;
+    var colAttr = activeCloud.geometry.attributes.color;
     var arr = posAttr.array;
     for (var i = 0; i < arr.length; i++) {
       data.points.push(arr[i]);
@@ -1583,23 +1287,16 @@ function getCurrentSceneData() {
 /** 3D可视化模块对外暴露的所有接口 */
 window.SpatialVisualizer = {
   init: init3DScene,                            // 初始化3D场景
-  updateScene: updateScene,                     // 更新场景数据
   resetCamera: reset3DCamera,                   // 重置相机位置
   setViewDirection: setViewDirection,           // 设置相机视角方向
   setViewToFirstCamera: setViewToFirstCamera,   // 切换到第一个相机视角
   togglePointCloud: togglePointCloud,           // 切换点云显示
   toggleTrajectory: toggleTrajectory,           // 切换轨迹显示
   setCallbacks: setVisualizerCallbacks,         // 设置回调函数
-  setPointSize: setGuiPointSize,                // 设置点云大小
-  setShowCamera: setGuiShowCamera,              // 设置相机显示开关
-  setCamSize: setGuiCamSize,                    // 设置相机视锥体大小
   getRenderer: getRenderer,                     // 获取渲染器
   getScene: getScene,                           // 获取场景
   getCamera: getCamera,                         // 获取相机
   getCurrentSceneData: getCurrentSceneData,     // 获取当前场景数据
-  updatePointSize: updateVisualizerPointSize,   // 更新点云大小
-  toggleCameraVisualization: toggleVisualizerCameraVisualization,  // 切换相机可视化
-  updateCameraSize: updateVisualizerCameraSize, // 更新相机大小
   updateColorMode: updateVisualizerColorMode,   // 更新颜色模式
   updateCurrentFrame: updateVisualizerCurrentFrame,               // 更新当前帧
   toggleCameraFrustums: toggleVisualizerCameraFrustums,           // 切换相机视锥体
@@ -1661,41 +1358,14 @@ let sceneScale = 1.0;
 /** 置信度绝对阈值（与 live_camera.py 一致，默认 0.7） */
 let guiConfThreshold = 0.7;
 /** 降采样步长（默认 5） */
+let guiPointSize = 0.00001;
+let guiShowCamera = true;
+let guiCamSize = 0.05;
 let guiDownsample = 5;
 /** 相机位姿数据（cameras.json内容） */
 let camerasData = null;
 /** 元数据（metadata.json内容） */
 let metadata = null;
-
-/**
- * 更新点云大小
- * @param {number} value - 新的点云渲染尺寸
- */
-function updateVisualizerPointSize(value) {
-  var size = parseFloat(value);
-  // 单一点云对象模式
-  if (mergedPointCloud) {
-    mergedPointCloud.material.size = size;
-  }
-  // 兼容旧的点云对象
-  if (pointCloud) {
-    pointCloud.material.size = size;
-  }
-  Object.keys(framePointCloudObjects).forEach(function(key) {
-    framePointCloudObjects[key].material.size = size;
-  });
-  guiPointSize = size;
-}
-
-function toggleVisualizerCameraVisualization(enabled) {
-  guiShowCamera = enabled;
-  if (frustumGroup) frustumGroup.visible = enabled;
-}
-
-function updateVisualizerCameraSize(value) {
-  guiCamSize = parseFloat(value);
-  rebuildCameraFrustums();
-}
 
 function updateVisualizerColorMode(mode) {
   if (Object.keys(framePointCloudObjects).length === 0) return;
@@ -2364,7 +2034,7 @@ function updateMergedPointCloud() {
     }
     
     var material = new THREE.PointsMaterial({
-      size: guiPointSize,
+      size: 0.00001,
       vertexColors: true,
       sizeAttenuation: true,
       transparent: false,
@@ -2385,9 +2055,6 @@ function updateMergedPointCloud() {
       console.warn('[Spatial] computeBoundingSphere failed, skipping:', e.message);
     }
   }
-  
-  // 更新点大小
-  mergedPointCloud.material.size = guiPointSize;
 }
 
 function updateVisibleFrames() {
@@ -2596,7 +2263,8 @@ async function fetchMetadata(batchId) {
         metadata = result.metadata;
         sceneCenter = metadata.scene_center || [0, 0, 0];
         sceneScale = metadata.scene_scale || 1.0;
-        addLog('获取 metadata 成功，场景中心: [' + sceneCenter.map(v => v.toFixed(2)).join(', ') + ']', 'ok');
+        addLog('获取 metadata 成功，中心: [' + sceneCenter.map(function(v) { return v.toFixed(2); }).join(', ') + '], 尺度: ' + sceneScale.toFixed(2), 'ok');
+        fitCameraToScene();
         return metadata;
       }
     }
@@ -2713,8 +2381,8 @@ function buildFrustumsFromCamerasData(camData) {
     const yAxis = new THREE.Vector3(-R[0][1], -R[1][1], R[2][1]);
     const zAxis = new THREE.Vector3(-R[0][2], -R[1][2], R[2][2]);
     
-    const axisLen = guiCamSize * 2;
-    const axisRadius = guiCamSize * 0.08;
+    const axisLen = 0.1;
+    const axisRadius = 0.004;
     
     // X 轴（红色）
     const xGeom = new THREE.CylinderGeometry(axisRadius, axisRadius, axisLen, 8);
@@ -2749,7 +2417,7 @@ function buildFrustumsFromCamerasData(camData) {
     cameraFrustums.push(zAxisMesh);
     
     // 相机中心点
-    const centerGeom = new THREE.SphereGeometry(guiCamSize * 0.15, 8, 8);
+    const centerGeom = new THREE.SphereGeometry(0.0075, 8, 8);
     const centerMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
     const centerMesh = new THREE.Mesh(centerGeom, centerMat);
     centerMesh.position.copy(camPos);
@@ -2876,9 +2544,6 @@ function initApiAndVisualizer() {
   }
 
   SpatialApi.setCallbacks({
-    onPointCloudUpdate: function(data) {
-      SpatialVisualizer.updateScene(data);
-    },
     onLogMessage: function(msg, type) {
       const logMsg = '[Spatial] ' + msg;
       const logType = type || 'info';
@@ -3342,7 +3007,7 @@ window.updateConfThreshold = updateConfThreshold;
 window.updateDownsample = updateDownsample;
 
 let visualizationSettings = {
-  pointSize: 0.001,
+  pointSize: 0.00001,
   showCamera: true,
   cameraSize: 0.05,
   colorMode: 'rgb',
@@ -3363,35 +3028,6 @@ function toggleVisualizationControls() {
   if (controls) {
     controls.style.display = controls.style.display === 'none' ? 'block' : 'none';
   }
-}
-
-/**
- * 更新点云大小（UI控件调用）
- * @param {number} value - 点云渲染尺寸
- */
-function updatePointSize(value) {
-  visualizationSettings.pointSize = parseFloat(value);
-  document.getElementById('pointSizeValue').textContent = value;
-  SpatialVisualizer.updatePointSize(value);
-}
-
-/**
- * 切换相机可视化显示（UI复选框调用）
- */
-function toggleCameraVisualization() {
-  const checkbox = document.getElementById('showCameraCheckbox');
-  visualizationSettings.showCamera = checkbox.checked;
-  SpatialVisualizer.toggleCameraVisualization(checkbox.checked);
-}
-
-/**
- * 更新相机视锥体大小（UI滑块调用）
- * @param {number} value - 视锥体尺寸
- */
-function updateCameraSize(value) {
-  visualizationSettings.cameraSize = parseFloat(value);
-  document.getElementById('cameraSizeValue').textContent = value;
-  SpatialVisualizer.updateCameraSize(value);
 }
 
 /**
@@ -3470,16 +3106,15 @@ function playAnimation() {
   visualizationSettings.isPlaying = true;
 
   // 保存当前参数，设置动画专用参数
-  visualizationSettings._savedPointSize = guiPointSize;
   visualizationSettings._savedDownsample = guiDownsample;
-  guiPointSize = 0.001;
   guiDownsample = 1;
-  if (pointCloud) pointCloud.material.size = 0.001;
+  if (mergedPointCloud) mergedPointCloud.material.size = guiPointSize;
+  if (pointCloud) pointCloud.material.size = guiPointSize;
   Object.keys(framePointCloudObjects).forEach(function(key) {
-    framePointCloudObjects[key].material.size = 0.001;
+    framePointCloudObjects[key].material.size = guiPointSize;
   });
-  document.getElementById('pointSizeSlider').value = '0.001';
-  document.getElementById('pointSizeValue').textContent = '0.001';
+  document.getElementById('pointSizeSlider').value = String(guiPointSize);
+  document.getElementById('pointSizeValue').textContent = String(guiPointSize);
   document.getElementById('downsampleSlider').value = '1';
   document.getElementById('downsampleValue').textContent = '1';
 
@@ -3525,18 +3160,10 @@ function stopAnimation() {
 }
 
 function restoreAnimationParams() {
-  if (visualizationSettings._savedPointSize !== undefined) {
-    guiPointSize = visualizationSettings._savedPointSize;
+  if (visualizationSettings._savedDownsample !== undefined) {
     guiDownsample = visualizationSettings._savedDownsample;
-    if (pointCloud) pointCloud.material.size = guiPointSize;
-    Object.keys(framePointCloudObjects).forEach(function(key) {
-      framePointCloudObjects[key].material.size = guiPointSize;
-    });
-    document.getElementById('pointSizeSlider').value = String(guiPointSize);
-    document.getElementById('pointSizeValue').textContent = String(guiPointSize);
     document.getElementById('downsampleSlider').value = String(guiDownsample);
     document.getElementById('downsampleValue').textContent = String(guiDownsample);
-    delete visualizationSettings._savedPointSize;
     delete visualizationSettings._savedDownsample;
   }
 }
