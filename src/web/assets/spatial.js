@@ -1233,7 +1233,7 @@ function updateCameraFrustums() {
 // Helper: rebuild both trajectory and frustums
 function updateTrajectoryAndFrustums() {
   updateTrajectoryLine();
-  updateCameraFrustums();
+  // Camera frustum axes hidden
 }
 
 // ---------- Camera Follow ----------
