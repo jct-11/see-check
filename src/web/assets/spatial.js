@@ -391,7 +391,7 @@ async function collectFrame() {
 
   // 每10帧上传一次（流式处理模式）
   if (collectedFrames.length >= 10) {
-    await uploadPendingFrames();  // ✅ 添加 await
+    while (collectedFrames.length > 0) { await uploadPendingFrames(); }
     
     // 流式处理：第一次上传后启动推理
     if (!isInferenceStarted && !isBatchProcessing && currentBatchId) {
@@ -404,7 +404,7 @@ async function collectFrame() {
   // 达到目标帧数后自动停止
   if (totalFramesCollected >= spatialCaptureTargetFrames) {
     console.log('[Spatial API] 达到目标帧数 ' + spatialCaptureTargetFrames + '，自动停止采集');
-    await uploadPendingFrames();  // ✅ 添加 await
+    while (collectedFrames.length > 0) { await uploadPendingFrames(); }
     stopSpatialCapture();
   }
 
