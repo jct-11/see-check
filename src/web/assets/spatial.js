@@ -759,11 +759,12 @@ let flightKeys = {};
 let flightLeftDown = false, flightRightDown = false;
 let flightLastMouseX = 0, flightLastMouseY = 0;
 
-// Point cloud — per-frame independent objects
-let framePointCloudObjects = {};   // {frameIndex: THREE.Points}
-let accumulatedPositions = [];   // flat Float32-compatible array (kept for stats)
-let accumulatedColors = [];     // flat Float32-compatible array (kept for stats)
+// Point cloud — single merged BufferGeometry, like viser
+let mergedPoints = null;
+let accumulatedPositions = [];   // flat Float32-compatible array
+let accumulatedColors = [];     // flat Float32-compatible array
 let frameRanges = {};           // {frameIndex: {start, count}}
+let framePointCloudObjects = {}; // legacy compat
 
 // Trajectory
 let trajectoryLine = null;
@@ -1056,35 +1057,57 @@ function addFramePointCloudToScene(frameIndex) {
 
   if (count === 0) return;
 
-  // Create independent Three.js Points object for this frame
-  try {
-    const geom = new THREE.BufferGeometry();
-    geom.setAttribute('position', new THREE.BufferAttribute(filteredPos.slice(0, count * 3), 3));
-    geom.setAttribute('color', new THREE.BufferAttribute(filteredCol.slice(0, count * 3), 3));
-    
-    const mat = new THREE.PointsMaterial({
-      size: guiPointSize,
-      vertexColors: true,
-      sizeAttenuation: true,
-      transparent: false,
-      opacity: 1.0,
-      depthWrite: true,
-      depthTest: true,
-    });
-    
-    const pointsObj = new THREE.Points(geom, mat);
-    pointsObj.name = `frame_${frameIndex}`;
-    scene.add(pointsObj);
-    framePointCloudObjects[frameIndex] = pointsObj;
-  } catch (e) {
-    console.error('[Spatial] Failed to create point cloud for frame ' + frameIndex + ':', e.message);
+  // Accumulate into merged arrays
+  const startIdx = accumulatedPositions.length / 3;
+  for (let j = 0; j < count; j++) {
+    accumulatedPositions.push(filteredPos[j * 3], filteredPos[j * 3 + 1], filteredPos[j * 3 + 2]);
+    accumulatedColors.push(filteredCol[j * 3], filteredCol[j * 3 + 1], filteredCol[j * 3 + 2]);
+  }
+  frameRanges[frameIndex] = { start: startIdx, count };
+
+  // Update merged point cloud
+  updateMergedPointCloud();
+  visualizerStats.vertices = accumulatedPositions.length / 3;
+}
+
+function updateMergedPointCloud() {
+  if (!THREE || !scene) return;
+  const numPoints = accumulatedPositions.length / 3;
+  if (numPoints === 0) return;
+  if (accumulatedPositions.length !== accumulatedColors.length) {
+    console.warn("[Spatial] accumulatedPositions/Colors length mismatch, skipping update");
     return;
   }
 
+  try {
+    const posAttr = new THREE.BufferAttribute(Float32Array.from(accumulatedPositions), 3);
+    const colAttr = new THREE.BufferAttribute(Float32Array.from(accumulatedColors), 3);
 
-  // Update stats
-  visualizerStats.vertices = Object.keys(framePointCloudObjects).length;
+    if (!mergedPoints) {
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute("position", posAttr);
+      geom.setAttribute("color", colAttr);
+      const mat = new THREE.PointsMaterial({
+        size: guiPointSize,
+        vertexColors: true,
+        sizeAttenuation: true,
+        transparent: false,
+        opacity: 1.0,
+        depthWrite: true,
+        depthTest: true,
+      });
+      mergedPoints = new THREE.Points(geom, mat);
+      scene.add(mergedPoints);
+    } else {
+      mergedPoints.geometry.setAttribute("position", posAttr);
+      mergedPoints.geometry.setAttribute("color", colAttr);
+    }
+  } catch (e) {
+    console.error("[Spatial] updateMergedPointCloud failed:", e.message);
+  }
 }
+
+
 
 // ---------- Trajectory ----------
 
@@ -1441,6 +1464,7 @@ const SpatialVisualizer = {
   // Point cloud
   addFramePointCloud: addFramePointCloudToScene,
   togglePointCloud,
+  updateMergedPointCloud,
 
   // Trajectory
   updateTrajectoryLine,
@@ -1487,16 +1511,15 @@ const SpatialVisualizer = {
 console.log('✅ SpatialVisualizer (viser-compatible) loaded');
 
 async function startFrameByFrameFetch(batchId, totalFrames) {
-  // Clean up old per-frame point cloud objects
-  for (const frameIndex in framePointCloudObjects) {
-    const obj = framePointCloudObjects[frameIndex];
-    if (obj) {
-      scene.remove(obj);
-      if (obj.geometry) obj.geometry.dispose();
-      if (obj.material) obj.material.dispose();
-    }
+  // Clean up old merged point cloud
+  if (mergedPoints) {
+    scene.remove(mergedPoints);
+    if (mergedPoints.geometry) mergedPoints.geometry.dispose();
+    if (mergedPoints.material) mergedPoints.material.dispose();
+    mergedPoints = null;
   }
-  framePointCloudObjects = {};
+  accumulatedPositions = [];
+  accumulatedColors = [];
   frameRanges = {};
   totalFramesAvailable = totalFrames;
   currentFetchFrame = 0;
