@@ -981,10 +981,13 @@ function animate() {
     updateFlightMovement();
   }
 
-  // Camera follow
+  // Camera follow (OpenCV y-down -> flip camera up)
   if (cameraFollowEnabled && followSmoothedPos && followLookTarget) {
     camera3d.position.copy(followSmoothedPos);
+    camera3d.up.set(0, -1, 0);
     camera3d.lookAt(followLookTarget);
+  } else {
+    camera3d.up.set(0, 1, 0);
   }
 
   if (renderer && scene && camera3d) {
