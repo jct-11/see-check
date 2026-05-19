@@ -1266,10 +1266,10 @@ function updateCameraFollow(frameIndex) {
     const R = R_raw.flat();
     if (!R || R.length < 9) return;
 
-    // OpenCV -> Three.js: (x, -y, -z)
-    const camPos = new THREE.Vector3(t[0], -t[1], -t[2]);
-    const forward = new THREE.Vector3(R[2], -R[5], -R[8]).normalize();
-    const up = new THREE.Vector3(R[1], -R[4], -R[7]).normalize();
+    // Raw world coordinates (matching scene objects)
+    const camPos = new THREE.Vector3(t[0], t[1], t[2]);
+    const forward = new THREE.Vector3(R[2], R[5], R[8]).normalize();
+    const up = new THREE.Vector3(R[1], R[4], R[7]).normalize();
 
     // Viewer behind (0.5m) and above (0.3m) the tracked camera
     const viewPos = camPos.clone().addScaledVector(forward, -0.5).addScaledVector(up, 0.3);
