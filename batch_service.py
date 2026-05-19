@@ -581,6 +581,13 @@ async def start_inference(batch_id: str, body: dict):
     ki = body.get("keyframe_interval", KEYFRAME_INTERVAL_DEFAULT)
     max_img = body.get("max_images", None)
     
+    # 检查是否有推理任务正在运行（单用户架构，不支持并发）
+    if model_state["is_streaming"]:
+        raise HTTPException(
+            status_code=409,
+            detail="当前有推理任务正在运行，请先结束当前任务"
+        )
+    
     model_state["current_batch_id"] = batch_id
     model_state["frame_idx"] = 0
     model_state["keyframe_interval"] = ki
