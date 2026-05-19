@@ -1693,6 +1693,7 @@ async function fetchNextFrame() {
       };
       
       addFramePointCloudToScene(currentFetchFrame);
+      framePointClouds[currentFetchFrame] = null; // free raw data after accumulation
       
       try {
         updateTrajectoryAndFrustums();
