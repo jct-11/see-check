@@ -743,10 +743,10 @@ let flightKeys = {};
 let flightLeftDown = false, flightRightDown = false;
 let flightLastMouseX = 0, flightLastMouseY = 0;
 
-// Point cloud — single merged BufferGeometry, like viser
-let mergedPoints = null;
-let accumulatedPositions = [];   // flat Float32-compatible array
-let accumulatedColors = [];     // flat Float32-compatible array
+// Point cloud — per-frame independent objects
+let framePointCloudObjects = {};   // {frameIndex: THREE.Points}
+let accumulatedPositions = [];   // flat Float32-compatible array (kept for stats)
+let accumulatedColors = [];     // flat Float32-compatible array (kept for stats)
 let frameRanges = {};           // {frameIndex: {start, count}}
 
 // Trajectory
@@ -782,7 +782,6 @@ let isFetchingFrames = false;
 let currentFetchFrame = 0;
 let totalFramesAvailable = 0;
 let framePointClouds = [];       // raw per-frame data before filtering
-let framePointCloudObjects = {}; // legacy compat
 
 // Image preview elements
 let currentFollowFrameIndex = -1;
@@ -927,7 +926,7 @@ function onFlightMouseMove(e) {
     if (!camera3d) return;
     const right = new THREE.Vector3();
     right.crossVectors(camera3d.getWorldDirection(new THREE.Vector3()), new THREE.Vector3(0, 1, 0)).normalize();
-    const up = new THREE.Vector3(0, 1, 0);
+    const up = new THREE.Vector3().crossVectors(right, dir).normalize();
     const scale = FLIGHT_MOVE_SPEED * 0.03;
     camera3d.position.addScaledVector(right, -dx * scale);
     camera3d.position.addScaledVector(up, dy * scale);
@@ -959,7 +958,7 @@ function updateFlightMovement() {
   if (!camera3d || cameraFollowEnabled) return;
   const dir = camera3d.getWorldDirection(new THREE.Vector3());
   const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
-  const up = new THREE.Vector3(0, 1, 0);
+  const up = new THREE.Vector3().crossVectors(right, dir).normalize();
   const speed = FLIGHT_MOVE_SPEED;
   if (flightKeys['w']) camera3d.position.addScaledVector(dir, speed);
   if (flightKeys['s']) camera3d.position.addScaledVector(dir, -speed);
@@ -1041,73 +1040,48 @@ function addFramePointCloudToScene(frameIndex) {
 
   if (count === 0) return;
 
-  // Record frame range
-  const startIdx = accumulatedPositions.length / 3;
-  for (let j = 0; j < count; j++) {
-    accumulatedPositions.push(filteredPos[j * 3], filteredPos[j * 3 + 1], filteredPos[j * 3 + 2]);
-    accumulatedColors.push(filteredCol[j * 3], filteredCol[j * 3 + 1], filteredCol[j * 3 + 2]);
+  // Create independent Three.js Points object for this frame
+  try {
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(filteredPos.slice(0, count * 3), 3));
+    geom.setAttribute('color', new THREE.BufferAttribute(filteredCol.slice(0, count * 3), 3));
+    
+    const mat = new THREE.PointsMaterial({
+      size: guiPointSize,
+      vertexColors: true,
+      sizeAttenuation: true,
+      transparent: false,
+      opacity: 1.0,
+      depthWrite: true,
+      depthTest: true,
+    });
+    
+    const pointsObj = new THREE.Points(geom, mat);
+    pointsObj.name = `frame_${frameIndex}`;
+    scene.add(pointsObj);
+    framePointCloudObjects[frameIndex] = pointsObj;
+  } catch (e) {
+    console.error('[Spatial] Failed to create point cloud for frame ' + frameIndex + ':', e.message);
+    return;
   }
-  frameRanges[frameIndex] = { start: startIdx, count };
 
   // Sliding window: keep max 300 frames
-  const indices = Object.keys(frameRanges).map(Number).sort((a, b) => a - b);
+  const indices = Object.keys(framePointCloudObjects).map(Number).sort((a, b) => a - b);
   if (indices.length > MAX_FRAMES) {
     const toRemove = indices.slice(0, indices.length - MAX_FRAMES);
-    let removedPts = 0;
     for (const idx of toRemove) {
-      removedPts += frameRanges[idx].count;
-      delete frameRanges[idx];
-    }
-    if (removedPts > 0) {
-      accumulatedPositions = accumulatedPositions.slice(removedPts * 3);
-      accumulatedColors = accumulatedColors.slice(removedPts * 3);
-      // Adjust remaining ranges
-      for (const idx of Object.keys(frameRanges).map(Number)) {
-        frameRanges[idx].start -= removedPts;
+      const obj = framePointCloudObjects[idx];
+      if (obj) {
+        scene.remove(obj);
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) obj.material.dispose();
+        delete framePointCloudObjects[idx];
       }
     }
   }
 
-  // Update merged point cloud
-  updateMergedPointCloud();
-  visualizerStats.vertices = accumulatedPositions.length / 3;
-}
-
-function updateMergedPointCloud() {
-  if (!THREE || !scene) return;
-  const numPoints = accumulatedPositions.length / 3;
-  if (numPoints === 0) return;
-  if (accumulatedPositions.length !== accumulatedColors.length) {
-    console.warn('[Spatial] accumulatedPositions/Colors length mismatch, skipping update');
-    return;
-  }
-
-  try {
-    const posAttr = new THREE.BufferAttribute(Float32Array.from(accumulatedPositions), 3);
-    const colAttr = new THREE.BufferAttribute(Float32Array.from(accumulatedColors), 3);
-
-    if (!mergedPoints) {
-      const geom = new THREE.BufferGeometry();
-      geom.setAttribute('position', posAttr);
-      geom.setAttribute('color', colAttr);
-      const mat = new THREE.PointsMaterial({
-        size: guiPointSize,
-        vertexColors: true,
-        sizeAttenuation: true,
-        transparent: false,
-        opacity: 1.0,
-        depthWrite: true,
-        depthTest: true,
-      });
-      mergedPoints = new THREE.Points(geom, mat);
-      scene.add(mergedPoints);
-    } else {
-      mergedPoints.geometry.setAttribute('position', posAttr);
-      mergedPoints.geometry.setAttribute('color', colAttr);
-    }
-  } catch (e) {
-    console.error('[Spatial] updateMergedPointCloud failed:', e.message);
-  }
+  // Update stats
+  visualizerStats.vertices = Object.keys(framePointCloudObjects).length;
 }
 
 // ---------- Trajectory ----------
