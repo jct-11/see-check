@@ -192,7 +192,7 @@ var SPATIAL_OVERLAP = 100;
 /** 采集帧宽度（像素） */
 var SPATIAL_FRAME_WIDTH = 518;
 /** 采集帧高度（像素） */
-var SPATIAL_FRAME_HEIGHT = 518;
+var SPATIAL_FRAME_HEIGHT = 378;
 /** 目标采集总帧数（用户可通过UI「总帧数」输入框修改） */
 var spatialCaptureTargetFrames = Infinity;
 var spatialKeyframeInterval = 1;  // Default: every frame is a keyframe (same as viser when <= 320 frames)
