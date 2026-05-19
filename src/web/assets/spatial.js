@@ -1083,6 +1083,7 @@ function updateMergedPointCloud() {
   if (newCount <= 0) return;
 
   // Expand GPU buffer if needed
+  let expanded = false;
   const needed = accumulatedPositions.length;
   if (!ptBufferPos || needed > ptBufferPos.length) {
     let cap = ptBufferPos ? ptBufferPos.length : 3000000;
@@ -1095,38 +1096,46 @@ function updateMergedPointCloud() {
     }
     ptBufferPos = newPos;
     ptBufferCol = newCol;
+    expanded = true;
   }
 
-  // Copy only new points from accumulated arrays into GPU buffer
+  // Copy only new points into GPU buffer
   const srcPos = new Float32Array(accumulatedPositions.slice(ptCount * 3));
   const srcCol = new Float32Array(accumulatedColors.slice(ptCount * 3));
   ptBufferPos.set(srcPos, ptCount * 3);
   ptBufferCol.set(srcCol, ptCount * 3);
   ptCount = total;
 
-  // Rebuild geometry with updated buffer (reliable, avoids stale attribute refs)
-  if (mergedPoints) {
-    const oldGeom = mergedPoints.geometry;
-    oldGeom.dispose();
+  // Update geometry: only rebuild on buffer expansion, otherwise just update draw range
+  if (!mergedPoints) {
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", new THREE.BufferAttribute(ptBufferPos, 3));
+    geom.setAttribute("color", new THREE.BufferAttribute(ptBufferCol, 3));
+    geom.setDrawRange(0, ptCount);
+    const mat = new THREE.PointsMaterial({
+      size: guiPointSize,
+      vertexColors: true,
+      sizeAttenuation: true,
+      transparent: false,
+      opacity: 1.0,
+      depthWrite: true,
+      depthTest: true,
+    });
+    mergedPoints = new THREE.Points(geom, mat);
+    scene.add(mergedPoints);
+  } else if (expanded) {
+    // Buffer expanded: update attribute references (no geometry rebuild)
+    mergedPoints.geometry.setAttribute("position", new THREE.BufferAttribute(ptBufferPos, 3));
+    mergedPoints.geometry.setAttribute("color", new THREE.BufferAttribute(ptBufferCol, 3));
+    mergedPoints.geometry.setDrawRange(0, ptCount);
+    mergedPoints.geometry.attributes.position.needsUpdate = true;
+    mergedPoints.geometry.attributes.color.needsUpdate = true;
+  } else {
+    // No expansion: just update draw range, GPU already has the data from previous upload
+    mergedPoints.geometry.setDrawRange(0, ptCount);
+    mergedPoints.geometry.attributes.position.needsUpdate = true;
+    mergedPoints.geometry.attributes.color.needsUpdate = true;
   }
-  const geom = new THREE.BufferGeometry();
-  geom.setAttribute("position", new THREE.BufferAttribute(ptBufferPos, 3));
-  geom.setAttribute("color", new THREE.BufferAttribute(ptBufferCol, 3));
-  geom.setDrawRange(0, ptCount);
-  const mat = mergedPoints ? mergedPoints.material : new THREE.PointsMaterial({
-    size: guiPointSize,
-    vertexColors: true,
-    sizeAttenuation: true,
-    transparent: false,
-    opacity: 1.0,
-    depthWrite: true,
-    depthTest: true,
-  });
-  if (mergedPoints) {
-    scene.remove(mergedPoints);
-  }
-  mergedPoints = new THREE.Points(geom, mat);
-  scene.add(mergedPoints);
 }
 
 
