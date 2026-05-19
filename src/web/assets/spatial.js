@@ -807,8 +807,6 @@ let metadata = null;
 let sceneCenter = [0, 0, 0];
 let sceneScale = 1.0;
 
-// Sliding window
-const MAX_FRAMES = 300;
 const MAX_FRUSTUMS = 60;
 
 // ---------- Three.js loader ----------
@@ -1083,20 +1081,6 @@ function addFramePointCloudToScene(frameIndex) {
     return;
   }
 
-  // Sliding window: keep max 300 frames
-  const indices = Object.keys(framePointCloudObjects).map(Number).sort((a, b) => a - b);
-  if (indices.length > MAX_FRAMES) {
-    const toRemove = indices.slice(0, indices.length - MAX_FRAMES);
-    for (const idx of toRemove) {
-      const obj = framePointCloudObjects[idx];
-      if (obj) {
-        scene.remove(obj);
-        if (obj.geometry) obj.geometry.dispose();
-        if (obj.material) obj.material.dispose();
-        delete framePointCloudObjects[idx];
-      }
-    }
-  }
 
   // Update stats
   visualizerStats.vertices = Object.keys(framePointCloudObjects).length;
@@ -1457,7 +1441,6 @@ const SpatialVisualizer = {
   // Point cloud
   addFramePointCloud: addFramePointCloudToScene,
   togglePointCloud,
-  updateMergedPointCloud,
 
   // Trajectory
   updateTrajectoryLine,
