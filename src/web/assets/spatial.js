@@ -919,7 +919,7 @@ function onFlightMouseMove(e) {
   const dx = e.clientX - flightLastMouseX;
   const dy = e.clientY - flightLastMouseY;
   if (flightLeftDown) {
-    flightYaw -= dx * FLIGHT_SENSITIVITY;
+    flightYaw += dx * FLIGHT_SENSITIVITY;
     flightPitch -= dy * FLIGHT_SENSITIVITY;
     // No pitch limit
   }
@@ -940,7 +940,7 @@ function onFlightWheel(e) {
   e.preventDefault();
   if (!camera3d || cameraFollowEnabled) return;
   const dir = camera3d.getWorldDirection(new THREE.Vector3());
-  camera3d.position.addScaledVector(dir, e.deltaY > 0 ? FLIGHT_ZOOM_SPEED : -FLIGHT_ZOOM_SPEED);
+  camera3d.position.addScaledVector(dir, e.deltaY > 0 ? -FLIGHT_ZOOM_SPEED : FLIGHT_ZOOM_SPEED);
 }
 
 function onFlightKeyDown(e) {
@@ -1247,7 +1247,6 @@ function disableCameraFollow() {
   followSmoothedPos = null;
   followLookTarget = null;
   currentFollowFrameIndex = -1;
-  fitCameraToScene();
   const imgEl = document.getElementById('frameImagePreview');
   const labelEl = document.getElementById('frameImageLabel');
   if (imgEl) imgEl.style.display = 'none';
@@ -1267,10 +1266,10 @@ function updateCameraFollow(frameIndex) {
     const R = R_raw.flat();
     if (!R || R.length < 9) return;
 
-    // World position and axes (xy-flipped to match scene)
-    const camPos = new THREE.Vector3(t[0], t[1], t[2]);
-    const forward = new THREE.Vector3(R[2], R[5], R[8]).normalize();
-    const up = new THREE.Vector3(R[1], R[4], R[7]).normalize();
+    // OpenCV -> Three.js: (x, -y, -z)
+    const camPos = new THREE.Vector3(t[0], -t[1], -t[2]);
+    const forward = new THREE.Vector3(R[2], -R[5], -R[8]).normalize();
+    const up = new THREE.Vector3(R[1], -R[4], -R[7]).normalize();
 
     // Viewer behind (0.5m) and above (0.3m) the tracked camera
     const viewPos = camPos.clone().addScaledVector(forward, -0.5).addScaledVector(up, 0.3);
