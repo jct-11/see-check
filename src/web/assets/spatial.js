@@ -1077,28 +1077,36 @@ function updateMergedPointCloud() {
   if (!THREE || !scene) return;
   const numPoints = accumulatedPositions.length / 3;
   if (numPoints === 0) return;
+  if (accumulatedPositions.length !== accumulatedColors.length) {
+    console.warn('[Spatial] accumulatedPositions/Colors length mismatch, skipping update');
+    return;
+  }
 
-  const posAttr = new THREE.BufferAttribute(Float32Array.from(accumulatedPositions), 3);
-  const colAttr = new THREE.BufferAttribute(Float32Array.from(accumulatedColors), 3);
+  try {
+    const posAttr = new THREE.BufferAttribute(Float32Array.from(accumulatedPositions), 3);
+    const colAttr = new THREE.BufferAttribute(Float32Array.from(accumulatedColors), 3);
 
-  if (!mergedPoints) {
-    const geom = new THREE.BufferGeometry();
-    geom.setAttribute('position', posAttr);
-    geom.setAttribute('color', colAttr);
-    const mat = new THREE.PointsMaterial({
-      size: guiPointSize,
-      vertexColors: true,
-      sizeAttenuation: true,
-      transparent: false,
-      opacity: 1.0,
-      depthWrite: true,
-      depthTest: true,
-    });
-    mergedPoints = new THREE.Points(geom, mat);
-    scene.add(mergedPoints);
-  } else {
-    mergedPoints.geometry.setAttribute('position', posAttr);
-    mergedPoints.geometry.setAttribute('color', colAttr);
+    if (!mergedPoints) {
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', posAttr);
+      geom.setAttribute('color', colAttr);
+      const mat = new THREE.PointsMaterial({
+        size: guiPointSize,
+        vertexColors: true,
+        sizeAttenuation: true,
+        transparent: false,
+        opacity: 1.0,
+        depthWrite: true,
+        depthTest: true,
+      });
+      mergedPoints = new THREE.Points(geom, mat);
+      scene.add(mergedPoints);
+    } else {
+      mergedPoints.geometry.setAttribute('position', posAttr);
+      mergedPoints.geometry.setAttribute('color', colAttr);
+    }
+  } catch (e) {
+    console.error('[Spatial] updateMergedPointCloud failed:', e.message);
   }
 }
 
@@ -1107,42 +1115,47 @@ function updateMergedPointCloud() {
 function updateTrajectoryLine() {
   if (!THREE || !scene) return;
 
-  if (trajectoryLine) {
-    scene.remove(trajectoryLine);
-    if (trajectoryLine.geometry) trajectoryLine.geometry.dispose();
-    if (trajectoryLine.material) trajectoryLine.material.dispose();
-    trajectoryLine = null;
-  }
+  try {
+    if (trajectoryLine) {
+      scene.remove(trajectoryLine);
+      if (trajectoryLine.geometry) trajectoryLine.geometry.dispose();
+      if (trajectoryLine.material) trajectoryLine.material.dispose();
+      trajectoryLine = null;
+    }
 
-  const pts = [];
-  for (let i = 0; i < camerasData.length; i++) {
-    const c = camerasData[i];
-    if (!c) continue;
-    const t = c.t_c2w || c.t_w2c;
-    if (!t || !Array.isArray(t) || t.length !== 3) continue;
-    // Raw world coordinates — no transform (matching viser)
-    pts.push(new THREE.Vector3(-t[0], -t[1], t[2]));
-  }
-  if (pts.length < 2) return;
+    const pts = [];
+    for (let i = 0; i < camerasData.length; i++) {
+      const c = camerasData[i];
+      if (!c) continue;
+      const t = c.t_c2w || c.t_w2c;
+      if (!t || !Array.isArray(t) || t.length < 3) continue;
+      if (!isFinite(t[0]) || !isFinite(t[1]) || !isFinite(t[2])) continue;
+      pts.push(new THREE.Vector3(-t[0], -t[1], t[2]));
+    }
+    if (pts.length < 2) return;
 
-  // CatmullRom spline matching viser: catmullrom type, tension=0.5
-  const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
-  const curvePts = curve.getPoints(pts.length * 3);
-  const geom = new THREE.BufferGeometry().setFromPoints(curvePts);
-  const mat = new THREE.LineBasicMaterial({
-    color: 0x78c878,
-    linewidth: 3,
-    transparent: true,
-    opacity: 1.0,
-  });
-  trajectoryLine = new THREE.Line(geom, mat);
-  scene.add(trajectoryLine);
+    // CatmullRom spline matching viser: catmullrom type, tension=0.5
+    const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
+    const curvePts = curve.getPoints(pts.length * 3);
+    const geom = new THREE.BufferGeometry().setFromPoints(curvePts);
+    const mat = new THREE.LineBasicMaterial({
+      color: 0x78c878,
+      linewidth: 3,
+      transparent: true,
+      opacity: 1.0,
+    });
+    trajectoryLine = new THREE.Line(geom, mat);
+    scene.add(trajectoryLine);
+  } catch (e) {
+    console.warn('[Spatial] updateTrajectoryLine failed:', e.message);
+  }
 }
 
 // ---------- Camera Frustums ----------
 
 function updateCameraFrustums() {
   if (!THREE || !scene) return;
+  try {if (!THREE || !scene) return;
 
   // Remove old frustum meshes
   for (const m of frustumMeshes) {
@@ -1166,6 +1179,9 @@ function updateCameraFrustums() {
     const cam = validCams[i];
     const t = cam.t_c2w || cam.t_w2c;
     const R = cam.R_c2w || cam.R_w2c;
+    if (!t || !Array.isArray(t) || t.length < 3) continue;
+    if (!R || !Array.isArray(R) || R.length < 3) continue;
+    if (!isFinite(t[0]) || !isFinite(t[1]) || !isFinite(t[2])) continue;
     // Raw world coordinates — no transform
     const pos = new THREE.Vector3(-t[0], -t[1], t[2]);
 
@@ -1205,6 +1221,9 @@ function updateCameraFrustums() {
     sphere.position.copy(pos);
     scene.add(sphere);
     frustumMeshes.push(sphere);
+  }
+  } catch (e) {
+    console.warn('[Spatial] updateCameraFrustums failed:', e.message);
   }
 }
 
