@@ -1246,15 +1246,23 @@ function enableCameraFollow() {
 }
 
 function disableCameraFollow() {
+  // Save look target before clearing, then reset up vector to standard
+  const savedTarget = followLookTarget ? followLookTarget.clone() : null;
   cameraFollowEnabled = false;
   followSmoothedPos = null;
   followLookTarget = null;
   currentFollowFrameIndex = -1;
-  if (camera3d) { const dir = new THREE.Vector3(); camera3d.getWorldDirection(dir); flightPitch = Math.asin(dir.y); flightYaw = Math.atan2(-dir.x, -dir.z); }
-  const imgEl = document.getElementById('frameImagePreview');
-  const labelEl = document.getElementById('frameImageLabel');
-  if (imgEl) imgEl.style.display = 'none';
-  if (labelEl) labelEl.style.display = 'none';
+  if (camera3d && savedTarget) {
+    camera3d.up.set(0, 1, 0);
+    camera3d.lookAt(savedTarget);
+    const euler = new THREE.Euler().setFromQuaternion(camera3d.quaternion, "YXZ");
+    flightYaw = euler.y;
+    flightPitch = euler.x;
+  }
+  const imgEl = document.getElementById("frameImagePreview");
+  const labelEl = document.getElementById("frameImageLabel");
+  if (imgEl) imgEl.style.display = "none";
+  if (labelEl) labelEl.style.display = "none";
 }
 
 function updateCameraFollow(frameIndex) {
