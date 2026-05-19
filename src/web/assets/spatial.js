@@ -1939,28 +1939,31 @@ async function switchToLocalCamera() {
 }
 
 function captureCurrentFrameData() {
-  var canvas = document.createElement('canvas');
-  canvas.width = SPATIAL_FRAME_WIDTH;
-  canvas.height = SPATIAL_FRAME_HEIGHT;
-  var ctx = canvas.getContext('2d');
+  var canvas = document.createElement("canvas");
 
-  var video = document.getElementById('spatialCameraVideo');
-  console.log('[Spatial] captureCurrentFrameData: video元素存在=' + (!!video));
-  console.log('[Spatial] captureCurrentFrameData: video.videoWidth=' + (video ? video.videoWidth : 'undefined'));
-  
+  var video = document.getElementById("spatialCameraVideo");
   if (!video || !video.videoWidth) {
-    console.warn('[Spatial] captureCurrentFrameData: 视频元素不存在或没有数据');
+    console.warn("[Spatial] captureCurrentFrameData: 视频元素不存在或没有数据");
     return null;
   }
-  
+
+  // Preserve aspect ratio: width=518, height from video aspect rounded to patch_size=14
+  var vidW = video.videoWidth;
+  var vidH = video.videoHeight;
+  var captureWidth = SPATIAL_FRAME_WIDTH;
+  var captureHeight = Math.round(captureWidth * (vidH / vidW) / 14) * 14;
+  canvas.width = captureWidth;
+  canvas.height = captureHeight;
+  var ctx = canvas.getContext("2d");
+
   try {
-    ctx.drawImage(video, 0, 0, SPATIAL_FRAME_WIDTH, SPATIAL_FRAME_HEIGHT);
-    var dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-    var base64 = dataUrl.split(',')[1];
-    console.log('[Spatial] captureCurrentFrameData: 本地摄像头采集成功, 数据长度=' + base64.length);
+    ctx.drawImage(video, 0, 0, captureWidth, captureHeight);
+    var dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    var base64 = dataUrl.split(",")[1];
+    console.log("[Spatial] captureCurrentFrameData: 本地摄像头采集成功, 尺寸=" + captureWidth + "x" + captureHeight + " 数据长度=" + base64.length);
     return { image: base64 };
   } catch (e) {
-    console.error('[Spatial] captureCurrentFrameData: 本地摄像头 drawImage 失败:', e.message);
+    console.error("[Spatial] captureCurrentFrameData: 本地摄像头 drawImage 失败:", e.message);
     return null;
   }
 }

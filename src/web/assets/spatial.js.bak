@@ -19,7 +19,7 @@ async function safeFetch(url, options) {
   }
   return response;
 }
-
+1
 /** Three.js 资源释放工具 */
 function disposeObject(obj) {
   if (!obj) return;
