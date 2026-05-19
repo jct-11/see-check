@@ -761,7 +761,10 @@ let flightLastMouseX = 0, flightLastMouseY = 0;
 
 // Point cloud — single merged BufferGeometry, like viser
 let mergedPoints = null;
-let accumulatedPositions = [];   // flat Float32-compatible array
+let accumulatedPositions = [];
+let ptBufferPos = null;  // Float32Array GPU buffer for positions
+let ptBufferCol = null;  // Float32Array GPU buffer for colors
+let ptCount = 0;         // total points in GPU buffer   // flat Float32-compatible array
 let accumulatedColors = [];     // flat Float32-compatible array
 let frameRanges = {};           // {frameIndex: {start, count}}
 let framePointCloudObjects = {}; // legacy compat
@@ -1074,44 +1077,56 @@ function addFramePointCloudToScene(frameIndex) {
 // Avoids rebuilding entire Float32Array from scratch every frame
 function updateMergedPointCloud() {
   if (!THREE || !scene) return;
-  const numPoints = accumulatedPositions.length / 3;
-  if (numPoints === 0) return;
-  if (accumulatedPositions.length !== accumulatedColors.length) {
-    console.warn("[Spatial] accumulatedPositions/Colors length mismatch, skipping update");
-    return;
-  }
+  const total = accumulatedPositions.length / 3;
+  if (total === 0) return;
+  const newCount = total - ptCount;
+  if (newCount <= 0) return;
 
-  try {
-    const posAttr = new THREE.BufferAttribute(Float32Array.from(accumulatedPositions), 3);
-    const colAttr = new THREE.BufferAttribute(Float32Array.from(accumulatedColors), 3);
-
-    if (!mergedPoints) {
-      const geom = new THREE.BufferGeometry();
-      geom.setAttribute("position", posAttr);
-      geom.setAttribute("color", colAttr);
-      const mat = new THREE.PointsMaterial({
-        size: guiPointSize,
-        vertexColors: true,
-        sizeAttenuation: true,
-        transparent: false,
-        opacity: 1.0,
-        depthWrite: true,
-        depthTest: true,
-      });
-      mergedPoints = new THREE.Points(geom, mat);
-      scene.add(mergedPoints);
-    } else {
-      // Dispose old geometry and replace
-      const oldGeom = mergedPoints.geometry;
-      const newGeom = new THREE.BufferGeometry();
-      newGeom.setAttribute("position", posAttr);
-      newGeom.setAttribute("color", colAttr);
-      mergedPoints.geometry = newGeom;
-      if (oldGeom) oldGeom.dispose();
+  // Expand GPU buffer if needed
+  const needed = accumulatedPositions.length;
+  if (!ptBufferPos || needed > ptBufferPos.length) {
+    let cap = ptBufferPos ? ptBufferPos.length : 3000000;
+    while (cap < needed) cap *= 2;
+    const newPos = new Float32Array(cap);
+    const newCol = new Float32Array(cap);
+    if (ptBufferPos) {
+      newPos.set(ptBufferPos.subarray(0, ptCount * 3));
+      newCol.set(ptBufferCol.subarray(0, ptCount * 3));
     }
-  } catch (e) {
-    console.error("[Spatial] updateMergedPointCloud failed:", e.message);
+    ptBufferPos = newPos;
+    ptBufferCol = newCol;
   }
+
+  // Copy only new points from accumulated arrays into GPU buffer
+  const srcPos = new Float32Array(accumulatedPositions.slice(ptCount * 3));
+  const srcCol = new Float32Array(accumulatedColors.slice(ptCount * 3));
+  ptBufferPos.set(srcPos, ptCount * 3);
+  ptBufferCol.set(srcCol, ptCount * 3);
+  ptCount = total;
+
+  // Rebuild geometry with updated buffer (reliable, avoids stale attribute refs)
+  if (mergedPoints) {
+    const oldGeom = mergedPoints.geometry;
+    oldGeom.dispose();
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.BufferAttribute(ptBufferPos, 3));
+  geom.setAttribute("color", new THREE.BufferAttribute(ptBufferCol, 3));
+  geom.setDrawRange(0, ptCount);
+  const mat = mergedPoints ? mergedPoints.material : new THREE.PointsMaterial({
+    size: guiPointSize,
+    vertexColors: true,
+    sizeAttenuation: true,
+    transparent: false,
+    opacity: 1.0,
+    depthWrite: true,
+    depthTest: true,
+  });
+  if (mergedPoints) {
+    scene.remove(mergedPoints);
+  }
+  mergedPoints = new THREE.Points(geom, mat);
+  scene.add(mergedPoints);
 }
 
 
@@ -1525,6 +1540,9 @@ async function startFrameByFrameFetch(batchId, totalFrames) {
     if (mergedPoints.material) mergedPoints.material.dispose();
     mergedPoints = null;
   }
+  ptBufferPos = null;
+  ptBufferCol = null;
+  ptCount = 0;
   accumulatedPositions = [];
   accumulatedColors = [];
   frameRanges = {};
