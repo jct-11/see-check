@@ -1104,7 +1104,7 @@ function updateMergedPointCloud() {
   const geom = new THREE.BufferGeometry();
   geom.setAttribute("position", posAttr);
   geom.setAttribute("color", colAttr);
-  geom.boundingSphere = null;  // skip auto-compute
+  geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Infinity);
 
   if (mergedPoints) {
     const oldGeom = mergedPoints.geometry;
