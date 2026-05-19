@@ -761,6 +761,8 @@ let flightLastMouseX = 0, flightLastMouseY = 0;
 
 // Point cloud — single merged BufferGeometry, like viser
 let mergedPoints = null;
+let pendingGeom = null;
+let geomPending = false;
 let accumPos = new Float32Array(3000000);  // pre-allocated position buffer
 let accumCol = new Float32Array(3000000);  // pre-allocated color buffer
 let accumCount = 0;                         // total points accumulated
@@ -769,6 +771,7 @@ let framePointCloudObjects = {}; // legacy compat
 
 // Trajectory
 let trajectoryLine = null;
+let trajectoryDirty = true;
 
 // Camera frustum meshes
 let frustumMeshes = [];
@@ -1005,6 +1008,15 @@ function animate() {
     camera3d.lookAt(followLookTarget);
   }
 
+   // Apply pending geometry swap (batched, once per frame max)
+  if (geomPending && pendingGeom && mergedPoints) {
+    const oldGeom = mergedPoints.geometry;
+    mergedPoints.geometry = pendingGeom;
+    oldGeom.dispose();
+    pendingGeom = null;
+    geomPending = false;
+  }
+
   if (renderer && scene && camera3d) {
     frameCount++;
     const now = performance.now();
@@ -1100,9 +1112,9 @@ function updateMergedPointCloud() {
   geom.boundingSphere = null;  // skip auto-compute
 
   if (mergedPoints) {
-    const oldGeom = mergedPoints.geometry;
-    mergedPoints.geometry = geom;
-    oldGeom.dispose();
+    // Defer geometry swap to animate loop (batch updates)
+    pendingGeom = geom;
+    geomPending = true;
   } else {
     const mat = new THREE.PointsMaterial({
       size: guiPointSize,
@@ -1124,6 +1136,7 @@ function updateMergedPointCloud() {
 
 function updateTrajectoryLine() {
   if (!THREE || !scene) return;
+  if (!trajectoryDirty) return;
 
   try {
     if (trajectoryLine) {
@@ -1156,6 +1169,7 @@ function updateTrajectoryLine() {
     });
     trajectoryLine = new THREE.Line(geom, mat);
     scene.add(trajectoryLine);
+    trajectoryDirty = false;
   } catch (e) {
     console.warn('[Spatial] updateTrajectoryLine failed:', e.message);
   }
@@ -1532,6 +1546,9 @@ async function startFrameByFrameFetch(batchId, totalFrames) {
   accumPos = new Float32Array(3000000);
   accumCol = new Float32Array(3000000);
   accumCount = 0;
+  geomPending = false;
+  pendingGeom = null;
+  trajectoryDirty = true;
   frameRanges = {};
   totalFramesAvailable = totalFrames;
   currentFetchFrame = 0;
@@ -1670,6 +1687,7 @@ async function fetchNextFrame() {
       const cameraResult = await cameraResponse.json();
       if (cameraResult.success && cameraResult.camera) {
         camerasData[currentFetchFrame] = cameraResult.camera;
+        trajectoryDirty = true;
       }
     }
     
@@ -2036,7 +2054,7 @@ function startSpatialCapture() {
  * 停止空间记忆采集
  * 通知API停止采集，更新按钮状态
  */
-function stopSpatialCapture() {
+async function stopSpatialCapture() {
   if (typeof SpatialApi !== 'undefined') {
     SpatialApi.setCapturing(false);
 
@@ -2050,9 +2068,17 @@ function stopSpatialCapture() {
     updateStepStatus('step3D', 'pending');
     hideCaptureProgress();
 
-    // Tell backend that upload is complete
+    // Tell backend that upload is complete (await to ensure delivery)
     if (currentBatchId) {
-      sendFinishInference(currentBatchId);
+      for (let retry = 0; retry < 3; retry++) {
+        try {
+          await sendFinishInference(currentBatchId);
+          break;
+        } catch (e) {
+          console.warn("sendFinishInference attempt " + (retry + 1) + " failed:", e.message);
+          if (retry < 2) await new Promise(r => setTimeout(r, 1000));
+        }
+      }
     }
     
     addLog('空间记忆采集已停止', 'info');
@@ -2108,9 +2134,17 @@ async function forceStopProcessing() {
   totalFramesCollected = 0;
   hideCaptureProgress();
 
-    // Tell backend that upload is complete
+    // Tell backend that upload is complete (await to ensure delivery)
     if (currentBatchId) {
-      sendFinishInference(currentBatchId);
+      for (let retry = 0; retry < 3; retry++) {
+        try {
+          await sendFinishInference(currentBatchId);
+          break;
+        } catch (e) {
+          console.warn("sendFinishInference attempt " + (retry + 1) + " failed:", e.message);
+          if (retry < 2) await new Promise(r => setTimeout(r, 1000));
+        }
+      }
     }
   currentBatchId = null;
   isInitialBatch = true;
