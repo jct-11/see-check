@@ -761,6 +761,9 @@ let flightLastMouseX = 0, flightLastMouseY = 0;
 
 // Point cloud — single merged BufferGeometry, like viser
 let mergedPoints = null;
+let pointPositionBuffer = null;
+let pointColorBuffer = null;
+let pointBufferOffset = 0;
 let accumulatedPositions = [];   // flat Float32-compatible array
 let accumulatedColors = [];     // flat Float32-compatible array
 let frameRanges = {};           // {frameIndex: {start, count}}
@@ -1070,23 +1073,51 @@ function addFramePointCloudToScene(frameIndex) {
   visualizerStats.vertices = accumulatedPositions.length / 3;
 }
 
+// Incremental update: append new points to pre-allocated GPU buffer
+// Avoids rebuilding entire Float32Array from scratch every frame
 function updateMergedPointCloud() {
   if (!THREE || !scene) return;
-  const numPoints = accumulatedPositions.length / 3;
-  if (numPoints === 0) return;
+  const newCount = accumulatedPositions.length / 3 - pointBufferOffset;
+  if (newCount <= 0) return;
+
   if (accumulatedPositions.length !== accumulatedColors.length) {
     console.warn("[Spatial] accumulatedPositions/Colors length mismatch, skipping update");
     return;
   }
 
   try {
-    const posAttr = new THREE.BufferAttribute(Float32Array.from(accumulatedPositions), 3);
-    const colAttr = new THREE.BufferAttribute(Float32Array.from(accumulatedColors), 3);
+    // Ensure GPU buffer is large enough
+    const needed = accumulatedPositions.length;
+    let capacity = pointPositionBuffer ? pointPositionBuffer.length : 0;
+    while (capacity < needed) {
+      capacity = capacity === 0 ? 3000000 : capacity * 2;  // start at 3M floats, double
+    }
+
+    if (!pointPositionBuffer || capacity > pointPositionBuffer.length) {
+      const newPosBuffer = new Float32Array(capacity);
+      const newColBuffer = new Float32Array(capacity);
+      if (pointPositionBuffer) {
+        newPosBuffer.set(pointPositionBuffer.subarray(0, pointBufferOffset * 3));
+        newColBuffer.set(pointColorBuffer.subarray(0, pointBufferOffset * 3));
+      }
+      pointPositionBuffer = newPosBuffer;
+      pointColorBuffer = newColBuffer;
+    }
+
+    // Copy only the NEW points into the GPU buffer
+    const srcPos = new Float32Array(accumulatedPositions.slice(pointBufferOffset * 3));
+    const srcCol = new Float32Array(accumulatedColors.slice(pointBufferOffset * 3));
+    pointPositionBuffer.set(srcPos, pointBufferOffset * 3);
+    pointColorBuffer.set(srcCol, pointBufferOffset * 3);
+    pointBufferOffset += newCount;
 
     if (!mergedPoints) {
       const geom = new THREE.BufferGeometry();
+      const posAttr = new THREE.BufferAttribute(pointPositionBuffer, 3);
+      const colAttr = new THREE.BufferAttribute(pointColorBuffer, 3);
       geom.setAttribute("position", posAttr);
       geom.setAttribute("color", colAttr);
+      geom.setDrawRange(0, pointBufferOffset);
       const mat = new THREE.PointsMaterial({
         size: guiPointSize,
         vertexColors: true,
@@ -1099,8 +1130,9 @@ function updateMergedPointCloud() {
       mergedPoints = new THREE.Points(geom, mat);
       scene.add(mergedPoints);
     } else {
-      mergedPoints.geometry.setAttribute("position", posAttr);
-      mergedPoints.geometry.setAttribute("color", colAttr);
+      mergedPoints.geometry.setDrawRange(0, pointBufferOffset);
+      mergedPoints.geometry.attributes.position.needsUpdate = true;
+      mergedPoints.geometry.attributes.color.needsUpdate = true;
     }
   } catch (e) {
     console.error("[Spatial] updateMergedPointCloud failed:", e.message);
@@ -1518,6 +1550,9 @@ async function startFrameByFrameFetch(batchId, totalFrames) {
     if (mergedPoints.material) mergedPoints.material.dispose();
     mergedPoints = null;
   }
+  pointPositionBuffer = null;
+  pointColorBuffer = null;
+  pointBufferOffset = 0;
   accumulatedPositions = [];
   accumulatedColors = [];
   frameRanges = {};
