@@ -786,7 +786,7 @@ let framePointCloudObjects = {}; // legacy compat
 
 // Image preview elements
 let currentFollowFrameIndex = -1;
-  if (camera3d) { const euler = new THREE.Euler().setFromQuaternion(camera3d.quaternion, "YXZ"); flightYaw = euler.y; flightPitch = euler.x; }
+  if (camera3d) { const dir = new THREE.Vector3(); camera3d.getWorldDirection(dir); flightPitch = Math.asin(dir.y); flightYaw = Math.atan2(-dir.x, -dir.z); }
 
 // Scene center from metadata (for camera fitting only, NOT for coordinate transform)
 let metadata = null;
@@ -1242,7 +1242,7 @@ function enableCameraFollow() {
   followSmoothedPos = null;
   followLookTarget = null;
   currentFollowFrameIndex = -1;
-  if (camera3d) { const euler = new THREE.Euler().setFromQuaternion(camera3d.quaternion, "YXZ"); flightYaw = euler.y; flightPitch = euler.x; }
+  if (camera3d) { const dir = new THREE.Vector3(); camera3d.getWorldDirection(dir); flightPitch = Math.asin(dir.y); flightYaw = Math.atan2(-dir.x, -dir.z); }
 }
 
 function disableCameraFollow() {
@@ -1250,7 +1250,7 @@ function disableCameraFollow() {
   followSmoothedPos = null;
   followLookTarget = null;
   currentFollowFrameIndex = -1;
-  if (camera3d) { const euler = new THREE.Euler().setFromQuaternion(camera3d.quaternion, "YXZ"); flightYaw = euler.y; flightPitch = euler.x; }
+  if (camera3d) { const dir = new THREE.Vector3(); camera3d.getWorldDirection(dir); flightPitch = Math.asin(dir.y); flightYaw = Math.atan2(-dir.x, -dir.z); }
   const imgEl = document.getElementById('frameImagePreview');
   const labelEl = document.getElementById('frameImageLabel');
   if (imgEl) imgEl.style.display = 'none';
@@ -2091,7 +2091,7 @@ async function forceStopProcessing() {
   followSmoothedPos = null;
   followLookTarget = null;
   currentFollowFrameIndex = -1;
-  if (camera3d) { const euler = new THREE.Euler().setFromQuaternion(camera3d.quaternion, "YXZ"); flightYaw = euler.y; flightPitch = euler.x; }
+  if (camera3d) { const dir = new THREE.Vector3(); camera3d.getWorldDirection(dir); flightPitch = Math.asin(dir.y); flightYaw = Math.atan2(-dir.x, -dir.z); }
   
   totalFramesAvailable = 0;
   currentFetchFrame = 0;
