@@ -577,6 +577,22 @@ function resetSpatialState() {
   uploadQueue = [];
   isBatchProcessing = false;
   isUploading = false;
+  
+  // Clean up per-frame point cloud objects
+  for (const frameIndex in framePointCloudObjects) {
+    const obj = framePointCloudObjects[frameIndex];
+    if (obj && scene) {
+      scene.remove(obj);
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) obj.material.dispose();
+    }
+  }
+  framePointCloudObjects = {};
+  frameRanges = {};
+  camerasData = [];
+  currentFetchFrame = 0;
+  isFetchingFrames = false;
+  totalFramesAvailable = 0;
 }
 
 // ============== 批次服务 API ==============
@@ -917,10 +933,12 @@ function onFlightMouseMove(e) {
   const dx = e.clientX - flightLastMouseX;
   const dy = e.clientY - flightLastMouseY;
   if (flightLeftDown) {
-    // Quaternion-based rotation: no gimbal lock, full 360
-    const yawQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), dx * FLIGHT_SENSITIVITY);
-    const pitchQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -dy * FLIGHT_SENSITIVITY);
-    flightQuat.premultiply(yawQ).multiply(pitchQ).normalize();
+    // All-local rotation (like a flashlight): both axes from current camera orientation
+    const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(flightQuat);
+    const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(flightQuat);
+    const yawQ = new THREE.Quaternion().setFromAxisAngle(camUp, -dx * FLIGHT_SENSITIVITY);
+    const pitchQ = new THREE.Quaternion().setFromAxisAngle(camRight, -dy * FLIGHT_SENSITIVITY);
+    flightQuat.multiply(yawQ).multiply(pitchQ).normalize();
   }
   if (flightRightDown) {
     if (!camera3d) return;
@@ -1307,7 +1325,10 @@ function setViewDirection(direction) {
 // ---------- Toggle Visibility ----------
 
 function togglePointCloud() {
-  if (mergedPoints) mergedPoints.visible = !mergedPoints.visible;
+  for (const frameIndex in framePointCloudObjects) {
+    const obj = framePointCloudObjects[frameIndex];
+    if (obj) obj.visible = !obj.visible;
+  }
 }
 
 function toggleTrajectory() {
@@ -1323,11 +1344,14 @@ function toggleCameraFrustums() {
 
 function getCurrentSceneData() {
   const data = { points: [], colors: [], cameraPoses: [] };
-  if (mergedPoints) {
-    const pos = mergedPoints.geometry.attributes.position.array;
-    const col = mergedPoints.geometry.attributes.color;
-    data.points = Array.from(pos);
-    data.colors = col ? Array.from(col.array) : [];
+  for (const frameIndex in framePointCloudObjects) {
+    const obj = framePointCloudObjects[frameIndex];
+    if (obj && obj.geometry) {
+      const pos = obj.geometry.attributes.position.array;
+      const col = obj.geometry.attributes.color;
+      data.points.push(...Array.from(pos));
+      if (col) data.colors.push(...Array.from(col.array));
+    }
   }
   for (const c of camerasData) {
     if (c) data.cameraPoses.push({ t_c2w: c.t_c2w, R_c2w: c.R_c2w });
@@ -1480,16 +1504,16 @@ const SpatialVisualizer = {
 console.log('✅ SpatialVisualizer (viser-compatible) loaded');
 
 async function startFrameByFrameFetch(batchId, totalFrames) {
-  // 隐藏批次模式点云（使用单一点云对象模式）
-  // 清理旧的单一点云对象
-  if (mergedPoints) {
-    scene.remove(mergedPoints);
-    if (mergedPoints.geometry) mergedPoints.geometry.dispose();
-    if (mergedPoints.material) mergedPoints.material.dispose();
-    mergedPoints = null;
+  // Clean up old per-frame point cloud objects
+  for (const frameIndex in framePointCloudObjects) {
+    const obj = framePointCloudObjects[frameIndex];
+    if (obj) {
+      scene.remove(obj);
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) obj.material.dispose();
+    }
   }
-  accumulatedPositions = [];
-  accumulatedColors = [];
+  framePointCloudObjects = {};
   frameRanges = {};
   totalFramesAvailable = totalFrames;
   currentFetchFrame = 0;
