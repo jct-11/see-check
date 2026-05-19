@@ -738,7 +738,7 @@ let camera3d = null;
 let renderer = null;
 let controls = null; // removed OrbitControls, kept for compat
 let animationId = null;
-let flightYaw = 0, flightPitch = 0;
+let flightYaw = 0, flightPitch = 0, flightRoll = 0;
 let flightKeys = {};
 let flightLeftDown = false, flightRightDown = false;
 let flightLastMouseX = 0, flightLastMouseY = 0;
@@ -786,7 +786,7 @@ let framePointCloudObjects = {}; // legacy compat
 
 // Image preview elements
 let currentFollowFrameIndex = -1;
-  if (camera3d) { const dir = new THREE.Vector3(); camera3d.getWorldDirection(dir); flightPitch = Math.asin(dir.y); flightYaw = Math.atan2(-dir.x, -dir.z); }
+  if (camera3d) { const euler = new THREE.Euler().setFromQuaternion(camera3d.quaternion, "YXZ"); flightYaw = euler.y; flightPitch = euler.x; flightRoll = euler.z; }
 
 // Scene center from metadata (for camera fitting only, NOT for coordinate transform)
 let metadata = null;
@@ -850,6 +850,7 @@ async function init3DScene() {
   // Flight controls state
   flightYaw = 0;
   flightPitch = 0;
+  flightRoll = 0;
   flightKeys = {};
   flightLeftDown = false;
   flightRightDown = false;
@@ -1242,23 +1243,22 @@ function enableCameraFollow() {
   followSmoothedPos = null;
   followLookTarget = null;
   currentFollowFrameIndex = -1;
-  if (camera3d) { const dir = new THREE.Vector3(); camera3d.getWorldDirection(dir); flightPitch = Math.asin(dir.y); flightYaw = Math.atan2(-dir.x, -dir.z); }
+  if (camera3d) { const euler = new THREE.Euler().setFromQuaternion(camera3d.quaternion, "YXZ"); flightYaw = euler.y; flightPitch = euler.x; flightRoll = euler.z; }
 }
 
 function disableCameraFollow() {
-  // Save look target before clearing, then reset up vector to standard
-  const savedTarget = followLookTarget ? followLookTarget.clone() : null;
+  // Capture camera orientation before clearing follow state
+  if (camera3d) {
+    const euler = new THREE.Euler().setFromQuaternion(camera3d.quaternion, "YXZ");
+    flightYaw = euler.y;
+    flightPitch = euler.x;
+    flightRoll = euler.z;
+    camera3d.up.set(0, 1, 0);
+  }
   cameraFollowEnabled = false;
   followSmoothedPos = null;
   followLookTarget = null;
   currentFollowFrameIndex = -1;
-  if (camera3d && savedTarget) {
-    camera3d.up.set(0, 1, 0);
-    camera3d.lookAt(savedTarget);
-    const euler = new THREE.Euler().setFromQuaternion(camera3d.quaternion, "YXZ");
-    flightYaw = euler.y;
-    flightPitch = euler.x;
-  }
   const imgEl = document.getElementById("frameImagePreview");
   const labelEl = document.getElementById("frameImageLabel");
   if (imgEl) imgEl.style.display = "none";
@@ -1314,6 +1314,7 @@ function reset3DCamera() {
     camera3d.position.set(cx, cy, cz + sceneScale * 0.5);
     flightYaw = 0;
     flightPitch = 0;
+    flightRoll = 0;
   }
 }
 
@@ -1329,6 +1330,7 @@ function fitCameraToScene() {
   );
   flightYaw = euler.y;
   flightPitch = euler.x;
+  flightRoll = euler.z;
 }
 
 function setViewDirection(direction) {
@@ -1343,6 +1345,7 @@ function setViewDirection(direction) {
   );
   flightYaw = euler.y;
   flightPitch = euler.x;
+  flightRoll = euler.z;
 }
 
 // ---------- Toggle Visibility ----------
@@ -2099,7 +2102,7 @@ async function forceStopProcessing() {
   followSmoothedPos = null;
   followLookTarget = null;
   currentFollowFrameIndex = -1;
-  if (camera3d) { const dir = new THREE.Vector3(); camera3d.getWorldDirection(dir); flightPitch = Math.asin(dir.y); flightYaw = Math.atan2(-dir.x, -dir.z); }
+  if (camera3d) { const euler = new THREE.Euler().setFromQuaternion(camera3d.quaternion, "YXZ"); flightYaw = euler.y; flightPitch = euler.x; flightRoll = euler.z; }
   
   totalFramesAvailable = 0;
   currentFetchFrame = 0;
