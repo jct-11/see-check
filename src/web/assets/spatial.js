@@ -1030,8 +1030,8 @@ function addFramePointCloudToScene(frameIndex) {
     if (i % stride !== 0) continue;
 
     // Raw world coordinates — no transform (matching viser)
-    filteredPos[count * 3] = -x;
-    filteredPos[count * 3 + 1] = -y;
+    filteredPos[count * 3] = x;
+    filteredPos[count * 3 + 1] = y;
     filteredPos[count * 3 + 2] = z;
     filteredCol[count * 3] = colors[i * 3];
     filteredCol[count * 3 + 1] = colors[i * 3 + 1];
@@ -1130,7 +1130,7 @@ function updateTrajectoryLine() {
       const t = c.t_c2w || c.t_w2c;
       if (!t || !Array.isArray(t) || t.length < 3) continue;
       if (!isFinite(t[0]) || !isFinite(t[1]) || !isFinite(t[2])) continue;
-      pts.push(new THREE.Vector3(-t[0], -t[1], t[2]));
+      pts.push(new THREE.Vector3(t[0], t[1], t[2]));
     }
     if (pts.length < 2) return;
 
@@ -1183,12 +1183,12 @@ function updateCameraFrustums() {
     if (!R || !Array.isArray(R) || R.length < 3) continue;
     if (!isFinite(t[0]) || !isFinite(t[1]) || !isFinite(t[2])) continue;
     // Raw world coordinates — no transform
-    const pos = new THREE.Vector3(-t[0], -t[1], t[2]);
+    const pos = new THREE.Vector3(t[0], t[1], t[2]);
 
     // Camera axes from rotation matrix columns
-    const xAxis = new THREE.Vector3(-R[0][0], -R[1][0], R[2][0]);
-    const yAxis = new THREE.Vector3(-R[0][1], -R[1][1], R[2][1]);
-    const zAxis = new THREE.Vector3(-R[0][2], -R[1][2], R[2][2]);
+    const xAxis = new THREE.Vector3(R[0][0], R[1][0], R[2][0]);
+    const yAxis = new THREE.Vector3(R[0][1], R[1][1], R[2][1]);
+    const zAxis = new THREE.Vector3(R[0][2], R[1][2], R[2][2]);
 
     function makeAxis(dir, color) {
       const g = new THREE.CylinderGeometry(axisRadius, axisRadius, axisLen, 8);
@@ -1268,9 +1268,9 @@ function updateCameraFollow(frameIndex) {
     if (!R || R.length < 9) return;
 
     // World position and axes (xy-flipped to match scene)
-    const camPos = new THREE.Vector3(-t[0], -t[1], t[2]);
-    const forward = new THREE.Vector3(-R[2], -R[5], R[8]).normalize();
-    const up = new THREE.Vector3(-R[1], -R[4], R[7]).normalize();
+    const camPos = new THREE.Vector3(t[0], t[1], t[2]);
+    const forward = new THREE.Vector3(R[2], R[5], R[8]).normalize();
+    const up = new THREE.Vector3(R[1], R[4], R[7]).normalize();
 
     // Viewer behind (0.5m) and above (0.3m) the tracked camera
     const viewPos = camPos.clone().addScaledVector(forward, -0.5).addScaledVector(up, 0.3);
