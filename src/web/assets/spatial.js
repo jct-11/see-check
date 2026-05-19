@@ -1241,30 +1241,38 @@ function updateCameraFollow(frameIndex) {
   const cam = camerasData[frameIndex];
   if (!cam) return;
 
-  const t = cam.t_c2w || cam.t_w2c;
-  const R = (cam.R_c2w || cam.R_w2c).flat();
-  // World position and axes (xy-flipped to match scene)
-  const camPos = new THREE.Vector3(-t[0], -t[1], t[2]);
-  const forward = new THREE.Vector3(-R[2], -R[5], R[8]).normalize();
-  const up = new THREE.Vector3(-R[1], -R[4], R[7]).normalize();
+  try {
+    const t = cam.t_c2w || cam.t_w2c;
+    const R_raw = cam.R_c2w || cam.R_w2c;
+    if (!t || !R_raw || !Array.isArray(t) || t.length < 3) return;
+    const R = R_raw.flat();
+    if (!R || R.length < 9) return;
 
-  // Viewer behind (0.5m) and above (0.3m) the tracked camera
-  const viewPos = camPos.clone().addScaledVector(forward, -0.5).addScaledVector(up, 0.3);
-  // Look at a point ahead of the tracked camera
-  const lookTarget = camPos.clone().addScaledVector(forward, 2.0);
+    // World position and axes (xy-flipped to match scene)
+    const camPos = new THREE.Vector3(-t[0], -t[1], t[2]);
+    const forward = new THREE.Vector3(-R[2], -R[5], R[8]).normalize();
+    const up = new THREE.Vector3(-R[1], -R[4], R[7]).normalize();
 
-  // Smooth follow
-  if (!followSmoothedPos) {
-    followSmoothedPos = viewPos.clone();
-    followLookTarget = lookTarget.clone();
-  } else {
-    followSmoothedPos.lerp(viewPos, FOLLOW_SMOOTH);
-    followLookTarget.lerp(lookTarget, FOLLOW_SMOOTH);
-  }
+    // Viewer behind (0.5m) and above (0.3m) the tracked camera
+    const viewPos = camPos.clone().addScaledVector(forward, -0.5).addScaledVector(up, 0.3);
+    // Look at a point ahead of the tracked camera
+    const lookTarget = camPos.clone().addScaledVector(forward, 2.0);
 
-  if (currentFollowFrameIndex !== frameIndex) {
-    currentFollowFrameIndex = frameIndex;
-    updateFrameImagePreview(fetchBatchId, frameIndex);
+    // Smooth follow
+    if (!followSmoothedPos) {
+      followSmoothedPos = viewPos.clone();
+      followLookTarget = lookTarget.clone();
+    } else {
+      followSmoothedPos.lerp(viewPos, FOLLOW_SMOOTH);
+      followLookTarget.lerp(lookTarget, FOLLOW_SMOOTH);
+    }
+
+    if (currentFollowFrameIndex !== frameIndex) {
+      currentFollowFrameIndex = frameIndex;
+      updateFrameImagePreview(fetchBatchId, frameIndex);
+    }
+  } catch (e) {
+    console.warn('updateCameraFollow error for frame ' + frameIndex + ':', e.message);
   }
 }
 
@@ -1604,6 +1612,11 @@ async function fetchNextFrame() {
       fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + currentFetchFrame + '/camera')
     ]);
     
+    // Check for network errors
+    if (!pointCloudResponse) {
+      throw new Error('pointCloudResponse is null');
+    }
+    
     // ✅ 检查点云请求是否成功
     if (!pointCloudResponse.ok) {
       // 404表示帧还没处理完，等待后重试同一帧
@@ -1655,7 +1668,11 @@ async function fetchNextFrame() {
       } catch (e) {
         console.warn('Camera frustum update failed for frame ' + currentFetchFrame + ': ' + e.message);
       }
-      updateCameraFollow(currentFetchFrame);
+      try {
+        updateCameraFollow(currentFetchFrame);
+      } catch (e) {
+        console.warn('Camera follow update failed:', e.message);
+      }
       
       var totalRenderedFrames = Object.keys(framePointClouds).length;
       addLog('帧 ' + currentFetchFrame + (totalFramesAvailable ? '/' + totalFramesAvailable : '') + ' 点云加载完成，共 ' + numVertices + ' 点，累计 ' + totalRenderedFrames + ' 帧', 'ok');
