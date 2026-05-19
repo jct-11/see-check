@@ -938,8 +938,8 @@ function onFlightMouseMove(e) {
     // All-local rotation (like a flashlight): both axes from current camera orientation
     const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(flightQuat);
     const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(flightQuat);
-    const yawQ = new THREE.Quaternion().setFromAxisAngle(camUp, -dx * FLIGHT_SENSITIVITY);
-    const pitchQ = new THREE.Quaternion().setFromAxisAngle(camRight, -dy * FLIGHT_SENSITIVITY);
+    const yawQ = new THREE.Quaternion().setFromAxisAngle(camUp, dx * FLIGHT_SENSITIVITY);
+    const pitchQ = new THREE.Quaternion().setFromAxisAngle(camRight, dy * FLIGHT_SENSITIVITY);
     flightQuat.multiply(yawQ).multiply(pitchQ).normalize();
   }
   if (flightRightDown) {
