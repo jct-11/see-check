@@ -738,7 +738,7 @@ let camera3d = null;
 let renderer = null;
 let controls = null; // removed OrbitControls, kept for compat
 let animationId = null;
-let flightQuat = new THREE.Quaternion();
+let flightQuat = null;
 let flightKeys = {};
 let flightLeftDown = false, flightRightDown = false;
 let flightLastMouseX = 0, flightLastMouseY = 0;
@@ -786,7 +786,6 @@ let framePointCloudObjects = {}; // legacy compat
 
 // Image preview elements
 let currentFollowFrameIndex = -1;
-  if (camera3d) { flightQuat.copy(camera3d.quaternion); }
 
 // Scene center from metadata (for camera fitting only, NOT for coordinate transform)
 let metadata = null;
@@ -848,7 +847,7 @@ async function init3DScene() {
   camera3d.lookAt(0, 0, 0);
 
   // Flight controls state
-  flightQuat.identity();
+  flightQuat = new THREE.Quaternion();
   flightKeys = {};
   flightLeftDown = false;
   flightRightDown = false;
@@ -1307,7 +1306,7 @@ function reset3DCamera() {
   if (camera3d) {
     const cx = sceneCenter[0], cy = sceneCenter[1], cz = sceneCenter[2];
     camera3d.position.set(cx, cy, cz + sceneScale * 0.5);
-    flightQuat.identity();
+    flightQuat = new THREE.Quaternion();
   }
 }
 
