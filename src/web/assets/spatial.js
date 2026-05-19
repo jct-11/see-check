@@ -196,7 +196,7 @@ var SPATIAL_FRAME_HEIGHT = 518;
 /** 目标采集总帧数（用户可通过UI「总帧数」输入框修改） */
 var spatialCaptureTargetFrames = Infinity;
 var spatialKeyframeInterval = 1;  // Default: every frame is a keyframe (same as viser when <= 320 frames)
-var spatialMaxImages = null;
+var spatialMaxImages = 200;
 /** 当前采集FPS（用户可通过UI「采集FPS」输入框修改） */
 var spatialCaptureFps = 5;
 
@@ -730,15 +730,18 @@ window.SpatialApi = {
 
 // Three.js references (populated by loadThreeJS)
 let THREE = null;
-let OrbitControls = null;
 let PLYLoader = null;
 
 // Scene objects
 let scene = null;
 let camera3d = null;
 let renderer = null;
-let controls = null;
+let controls = null; // removed OrbitControls, kept for compat
 let animationId = null;
+let flightYaw = 0, flightPitch = 0;
+let flightKeys = {};
+let flightLeftDown = false, flightRightDown = false;
+let flightLastMouseX = 0, flightLastMouseY = 0;
 
 // Point cloud — single merged BufferGeometry, like viser
 let mergedPoints = null;
@@ -770,7 +773,7 @@ let camerasData = [];
 let cameraFollowEnabled = false;
 let cameraFollowDistance = 0.8;
 let followSmoothedPos = null;
-let followSmoothedDir = null;
+let followLookTarget = null;
 const FOLLOW_SMOOTH = 0.25;
 
 // Data fetching state
@@ -799,11 +802,9 @@ async function loadThreeJS() {
   if (THREE) return THREE;
   try {
     THREE = await import('three');
-    const { OrbitControls: OC } = await import('three/addons/controls/OrbitControls.js');
-    OrbitControls = OC;
     const { PLYLoader: PL } = await import('three/addons/loaders/PLYLoader.js');
     PLYLoader = PL;
-    console.log('[Spatial] Three.js, OrbitControls and PLYLoader loaded successfully');
+    console.log('[Spatial] Three.js and PLYLoader loaded successfully');
     return THREE;
   } catch (err) {
     console.error('[Spatial] Failed to load Three.js:', err);
@@ -845,13 +846,23 @@ async function init3DScene() {
   camera3d.position.set(0, 0, 5);
   camera3d.lookAt(0, 0, 0);
 
-  // OrbitControls
-  controls = new OrbitControls(camera3d, renderer.domElement);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.08;
-  controls.minDistance = 0.01;
-  controls.maxDistance = 5000;
-  controls.target.set(0, 0, 0);
+  // Flight controls state
+  flightYaw = 0;
+  flightPitch = 0;
+  flightKeys = {};
+  flightLeftDown = false;
+  flightRightDown = false;
+  flightLastMouseX = 0;
+  flightLastMouseY = 0;
+
+  // Mouse: left drag = rotate, right drag = pan, scroll = zoom
+  renderer.domElement.addEventListener('mousedown', onFlightMouseDown);
+  renderer.domElement.addEventListener('mouseup', onFlightMouseUp);
+  renderer.domElement.addEventListener('mousemove', onFlightMouseMove);
+  renderer.domElement.addEventListener('wheel', onFlightWheel, { passive: false });
+  renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
+  window.addEventListener('keydown', onFlightKeyDown);
+  window.addEventListener('keyup', onFlightKeyUp);
 
   // ResizeObserver
   new ResizeObserver(entries => {
@@ -885,19 +896,95 @@ function onWindowResize() {
   if (renderer) renderer.setSize(w, h);
 }
 
+// ---------- Flight Controls ----------
+
+const FLIGHT_MOVE_SPEED = 0.08;
+const FLIGHT_ZOOM_SPEED = 0.15;
+const FLIGHT_SENSITIVITY = 0.003;
+
+function onFlightMouseDown(e) {
+  if (e.button === 0) { flightLeftDown = true; }
+  if (e.button === 2) { flightRightDown = true; }
+  flightLastMouseX = e.clientX;
+  flightLastMouseY = e.clientY;
+  e.preventDefault();
+}
+
+function onFlightMouseUp(e) {
+  if (e.button === 0) { flightLeftDown = false; }
+  if (e.button === 2) { flightRightDown = false; }
+}
+
+function onFlightMouseMove(e) {
+  const dx = e.clientX - flightLastMouseX;
+  const dy = e.clientY - flightLastMouseY;
+  if (flightLeftDown) {
+    flightYaw -= dx * FLIGHT_SENSITIVITY;
+    flightPitch -= dy * FLIGHT_SENSITIVITY;
+    // No pitch limit
+  }
+  if (flightRightDown) {
+    if (!camera3d) return;
+    const right = new THREE.Vector3();
+    right.crossVectors(camera3d.getWorldDirection(new THREE.Vector3()), new THREE.Vector3(0, 1, 0)).normalize();
+    const up = new THREE.Vector3(0, 1, 0);
+    const scale = FLIGHT_MOVE_SPEED * 0.03;
+    camera3d.position.addScaledVector(right, -dx * scale);
+    camera3d.position.addScaledVector(up, dy * scale);
+  }
+  flightLastMouseX = e.clientX;
+  flightLastMouseY = e.clientY;
+}
+
+function onFlightWheel(e) {
+  e.preventDefault();
+  if (!camera3d || cameraFollowEnabled) return;
+  const dir = camera3d.getWorldDirection(new THREE.Vector3());
+  camera3d.position.addScaledVector(dir, e.deltaY > 0 ? FLIGHT_ZOOM_SPEED : -FLIGHT_ZOOM_SPEED);
+}
+
+function onFlightKeyDown(e) {
+  flightKeys[e.key.toLowerCase()] = true;
+  // Prevent browser defaults for flight keys
+  if (['w','a','s','d','q','e'].includes(e.key.toLowerCase())) {
+    e.preventDefault();
+  }
+}
+
+function onFlightKeyUp(e) {
+  flightKeys[e.key.toLowerCase()] = false;
+}
+
+function updateFlightMovement() {
+  if (!camera3d || cameraFollowEnabled) return;
+  const dir = camera3d.getWorldDirection(new THREE.Vector3());
+  const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
+  const up = new THREE.Vector3(0, 1, 0);
+  const speed = FLIGHT_MOVE_SPEED;
+  if (flightKeys['w']) camera3d.position.addScaledVector(dir, speed);
+  if (flightKeys['s']) camera3d.position.addScaledVector(dir, -speed);
+  if (flightKeys['a']) camera3d.position.addScaledVector(right, -speed);
+  if (flightKeys['d']) camera3d.position.addScaledVector(right, speed);
+  if (flightKeys['q']) camera3d.position.addScaledVector(up, -speed);
+  if (flightKeys['e']) camera3d.position.addScaledVector(up, speed);
+}
+
 // ---------- Animation Loop ----------
 
 function animate() {
   animationId = requestAnimationFrame(animate);
 
-  if (controls) controls.update();
+  // Update flight camera orientation from yaw/pitch (unless in follow mode)
+  if (!cameraFollowEnabled && camera3d) {
+    const euler = new THREE.Euler(flightPitch, flightYaw, 0, 'YXZ');
+    camera3d.quaternion.setFromEuler(euler);
+    updateFlightMovement();
+  }
 
   // Camera follow
-  if (cameraFollowEnabled && followSmoothedPos && followSmoothedDir) {
+  if (cameraFollowEnabled && followSmoothedPos && followLookTarget) {
     camera3d.position.copy(followSmoothedPos);
-    controls.target.copy(
-      followSmoothedPos.clone().addScaledVector(followSmoothedDir, 1.0)
-    );
+    camera3d.lookAt(followLookTarget);
   }
 
   if (renderer && scene && camera3d) {
@@ -1132,15 +1219,16 @@ function updateTrajectoryAndFrustums() {
 function enableCameraFollow() {
   cameraFollowEnabled = true;
   followSmoothedPos = null;
-  followSmoothedDir = null;
+  followLookTarget = null;
   currentFollowFrameIndex = -1;
 }
 
 function disableCameraFollow() {
   cameraFollowEnabled = false;
   followSmoothedPos = null;
-  followSmoothedDir = null;
+  followLookTarget = null;
   currentFollowFrameIndex = -1;
+  fitCameraToScene();
   const imgEl = document.getElementById('frameImagePreview');
   const labelEl = document.getElementById('frameImageLabel');
   if (imgEl) imgEl.style.display = 'none';
@@ -1148,24 +1236,30 @@ function disableCameraFollow() {
 }
 
 function updateCameraFollow(frameIndex) {
-  if (!cameraFollowEnabled || !camera3d || !controls || frameIndex >= camerasData.length) return;
+  if (!cameraFollowEnabled || !camera3d || frameIndex >= camerasData.length) return;
 
   const cam = camerasData[frameIndex];
   if (!cam) return;
 
   const t = cam.t_c2w || cam.t_w2c;
   const R = (cam.R_c2w || cam.R_w2c).flat();
-  // Raw world coordinates — no transform (matching viser)
+  // World position and axes (xy-flipped to match scene)
   const camPos = new THREE.Vector3(-t[0], -t[1], t[2]);
   const forward = new THREE.Vector3(-R[2], -R[5], R[8]).normalize();
+  const up = new THREE.Vector3(-R[1], -R[4], R[7]).normalize();
+
+  // Viewer behind (0.5m) and above (0.3m) the tracked camera
+  const viewPos = camPos.clone().addScaledVector(forward, -0.5).addScaledVector(up, 0.3);
+  // Look at a point ahead of the tracked camera
+  const lookTarget = camPos.clone().addScaledVector(forward, 2.0);
 
   // Smooth follow
   if (!followSmoothedPos) {
-    followSmoothedPos = camPos.clone();
-    followSmoothedDir = forward.clone();
+    followSmoothedPos = viewPos.clone();
+    followLookTarget = lookTarget.clone();
   } else {
-    followSmoothedPos.lerp(camPos, FOLLOW_SMOOTH);
-    followSmoothedDir.lerp(forward, FOLLOW_SMOOTH).normalize();
+    followSmoothedPos.lerp(viewPos, FOLLOW_SMOOTH);
+    followLookTarget.lerp(lookTarget, FOLLOW_SMOOTH);
   }
 
   if (currentFollowFrameIndex !== frameIndex) {
@@ -1177,31 +1271,40 @@ function updateCameraFollow(frameIndex) {
 // ---------- Camera Controls ----------
 
 function reset3DCamera() {
-  if (camera3d && controls) {
+  if (camera3d) {
     const cx = sceneCenter[0], cy = sceneCenter[1], cz = sceneCenter[2];
     camera3d.position.set(cx, cy, cz + sceneScale * 0.5);
-    controls.target.set(cx, cy, cz);
-    controls.update();
+    flightYaw = 0;
+    flightPitch = 0;
   }
 }
 
 function fitCameraToScene() {
-  if (!camera3d || !controls) return;
+  if (!camera3d) return;
   const cx = sceneCenter[0], cy = sceneCenter[1], cz = sceneCenter[2];
   const dist = sceneScale * 0.8;
   camera3d.position.set(cx + dist * 0.5, cy + dist * 0.5, cz + dist);
-  controls.target.set(cx, cy, cz);
-  controls.update();
+  // Update flight yaw/pitch to look at scene center
+  const lookDir = new THREE.Vector3(cx, cy, cz).sub(camera3d.position).normalize();
+  const euler = new THREE.Euler().setFromQuaternion(
+    new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, -1), lookDir)
+  );
+  flightYaw = euler.y;
+  flightPitch = euler.x;
 }
 
 function setViewDirection(direction) {
-  if (!camera3d || !controls) return;
+  if (!camera3d) return;
   const cx = sceneCenter[0], cy = sceneCenter[1], cz = sceneCenter[2];
   const dist = sceneScale * 0.8;
   const dir = new THREE.Vector3(direction[0], direction[1], direction[2]).normalize();
   camera3d.position.copy(new THREE.Vector3(cx, cy, cz).addScaledVector(dir, dist));
-  controls.target.set(cx, cy, cz);
-  controls.update();
+  const lookDir = new THREE.Vector3(cx, cy, cz).sub(camera3d.position).normalize();
+  const euler = new THREE.Euler().setFromQuaternion(
+    new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, -1), lookDir)
+  );
+  flightYaw = euler.y;
+  flightPitch = euler.x;
 }
 
 // ---------- Toggle Visibility ----------
@@ -1552,6 +1655,7 @@ async function fetchNextFrame() {
       } catch (e) {
         console.warn('Camera frustum update failed for frame ' + currentFetchFrame + ': ' + e.message);
       }
+      updateCameraFollow(currentFetchFrame);
       
       var totalRenderedFrames = Object.keys(framePointClouds).length;
       addLog('帧 ' + currentFetchFrame + (totalFramesAvailable ? '/' + totalFramesAvailable : '') + ' 点云加载完成，共 ' + numVertices + ' 点，累计 ' + totalRenderedFrames + ' 帧', 'ok');
@@ -1898,6 +2002,11 @@ function stopSpatialCapture() {
     updateStepStatus('stepProcessing', 'pending');
     updateStepStatus('step3D', 'pending');
     hideCaptureProgress();
+
+    // Tell backend that upload is complete
+    if (currentBatchId) {
+      sendFinishInference(currentBatchId);
+    }
     
     addLog('空间记忆采集已停止', 'info');
   }
@@ -1939,9 +2048,9 @@ async function forceStopProcessing() {
   if (labelEl) labelEl.style.display = 'none';
   
   // handled by followSmoothedPos in new module
-  // handled by followSmoothedDir in new module
+  // handled by followLookTarget in new module
   followSmoothedPos = null;
-  followSmoothedDir = null;
+  followLookTarget = null;
   currentFollowFrameIndex = -1;
   
   totalFramesAvailable = 0;
@@ -1950,6 +2059,11 @@ async function forceStopProcessing() {
   spatialFrameCounter = 0;
   totalFramesCollected = 0;
   hideCaptureProgress();
+
+    // Tell backend that upload is complete
+    if (currentBatchId) {
+      sendFinishInference(currentBatchId);
+    }
   currentBatchId = null;
   isInitialBatch = true;
   collectedFrames = [];
