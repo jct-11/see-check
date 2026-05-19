@@ -761,8 +761,9 @@ let flightLastMouseX = 0, flightLastMouseY = 0;
 
 // Point cloud — single merged BufferGeometry, like viser
 let mergedPoints = null;
-let accumulatedPositions = [];   // flat Float32-compatible array
-let accumulatedColors = [];     // flat Float32-compatible array
+let accumPos = new Float32Array(3000000);  // pre-allocated position buffer
+let accumCol = new Float32Array(3000000);  // pre-allocated color buffer
+let accumCount = 0;                         // total points accumulated
 let frameRanges = {};           // {frameIndex: {start, count}}
 let framePointCloudObjects = {}; // legacy compat
 
@@ -1057,60 +1058,62 @@ function addFramePointCloudToScene(frameIndex) {
 
   if (count === 0) return;
 
-  // Accumulate into merged arrays
-  const startIdx = accumulatedPositions.length / 3;
-  for (let j = 0; j < count; j++) {
-    accumulatedPositions.push(filteredPos[j * 3], filteredPos[j * 3 + 1], filteredPos[j * 3 + 2]);
-    accumulatedColors.push(filteredCol[j * 3], filteredCol[j * 3 + 1], filteredCol[j * 3 + 2]);
+  // Ensure accumulation buffer has enough capacity
+  const needed = (accumCount + count) * 3;
+  if (needed > accumPos.length) {
+    let cap = accumPos.length;
+    while (cap < needed) cap *= 2;
+    const newPos = new Float32Array(cap);
+    const newCol = new Float32Array(cap);
+    newPos.set(accumPos.subarray(0, accumCount * 3));
+    newCol.set(accumCol.subarray(0, accumCount * 3));
+    accumPos = newPos;
+    accumCol = newCol;
   }
+
+  // Batch-copy filtered points into accumulation buffer
+  accumPos.set(filteredPos.subarray(0, count * 3), accumCount * 3);
+  accumCol.set(filteredCol.subarray(0, count * 3), accumCount * 3);
+  const startIdx = accumCount;
+  accumCount += count;
   frameRanges[frameIndex] = { start: startIdx, count };
 
   // Update merged point cloud
   updateMergedPointCloud();
-  visualizerStats.vertices = accumulatedPositions.length / 3;
+  visualizerStats.vertices = accumCount;
 }
 
 // Incremental update: append new points to pre-allocated GPU buffer
 // Avoids rebuilding entire Float32Array from scratch every frame
 function updateMergedPointCloud() {
-  if (!THREE || !scene) return;
-  const numPoints = accumulatedPositions.length / 3;
-  if (numPoints === 0) return;
-  if (accumulatedPositions.length !== accumulatedColors.length) {
-    console.warn("[Spatial] accumulatedPositions/Colors length mismatch, skipping update");
-    return;
-  }
+  if (!THREE || !scene || accumCount === 0) return;
 
-  try {
-    const posAttr = new THREE.BufferAttribute(Float32Array.from(accumulatedPositions), 3);
-    const colAttr = new THREE.BufferAttribute(Float32Array.from(accumulatedColors), 3);
+  // Create geometry from pre-allocated buffers (zero-copy view)
+  const posAttr = new THREE.BufferAttribute(
+    new Float32Array(accumPos.buffer, 0, accumCount * 3), 3);
+  const colAttr = new THREE.BufferAttribute(
+    new Float32Array(accumCol.buffer, 0, accumCount * 3), 3);
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", posAttr);
+  geom.setAttribute("color", colAttr);
+  geom.boundingSphere = null;  // skip auto-compute
 
-    if (!mergedPoints) {
-      const geom = new THREE.BufferGeometry();
-      geom.setAttribute("position", posAttr);
-      geom.setAttribute("color", colAttr);
-      const mat = new THREE.PointsMaterial({
-        size: guiPointSize,
-        vertexColors: true,
-        sizeAttenuation: true,
-        transparent: false,
-        opacity: 1.0,
-        depthWrite: true,
-        depthTest: true,
-      });
-      mergedPoints = new THREE.Points(geom, mat);
-      scene.add(mergedPoints);
-    } else {
-      // Dispose old geometry and replace
-      const oldGeom = mergedPoints.geometry;
-      const newGeom = new THREE.BufferGeometry();
-      newGeom.setAttribute("position", posAttr);
-      newGeom.setAttribute("color", colAttr);
-      mergedPoints.geometry = newGeom;
-      if (oldGeom) oldGeom.dispose();
-    }
-  } catch (e) {
-    console.error("[Spatial] updateMergedPointCloud failed:", e.message);
+  if (mergedPoints) {
+    const oldGeom = mergedPoints.geometry;
+    mergedPoints.geometry = geom;
+    oldGeom.dispose();
+  } else {
+    const mat = new THREE.PointsMaterial({
+      size: guiPointSize,
+      vertexColors: true,
+      sizeAttenuation: true,
+      transparent: false,
+      opacity: 1.0,
+      depthWrite: true,
+      depthTest: true,
+    });
+    mergedPoints = new THREE.Points(geom, mat);
+    scene.add(mergedPoints);
   }
 }
 
@@ -1525,8 +1528,9 @@ async function startFrameByFrameFetch(batchId, totalFrames) {
     if (mergedPoints.material) mergedPoints.material.dispose();
     mergedPoints = null;
   }
-  accumulatedPositions = [];
-  accumulatedColors = [];
+  accumPos = new Float32Array(3000000);
+  accumCol = new Float32Array(3000000);
+  accumCount = 0;
   frameRanges = {};
   totalFramesAvailable = totalFrames;
   currentFetchFrame = 0;
