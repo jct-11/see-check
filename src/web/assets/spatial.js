@@ -761,8 +761,6 @@ let flightLastMouseX = 0, flightLastMouseY = 0;
 
 // Point cloud — single merged BufferGeometry, like viser
 let mergedPoints = null;
-let pendingGeom = null;
-let geomPending = false;
 let accumPos = new Float32Array(3000000);  // pre-allocated position buffer
 let accumCol = new Float32Array(3000000);  // pre-allocated color buffer
 let accumCount = 0;                         // total points accumulated
@@ -784,6 +782,7 @@ let guiConfThreshold = 0.5;
 // Stats
 let visualizerStats = { fps: 0, vertices: 0 };
 let frameTime = 0;
+let lastRenderTime = 0;
 let frameCount = 0;
 let onStatsUpdate = null;
 
@@ -995,6 +994,10 @@ function updateFlightMovement() {
 function animate() {
   animationId = requestAnimationFrame(animate);
 
+  const now = performance.now();
+  // Throttle to 30fps in free-flight mode, full rate in follow mode
+  if (!cameraFollowEnabled && now - lastRenderTime < 33) return;
+
   // Update flight camera orientation from yaw/pitch (unless in follow mode)
   if (!cameraFollowEnabled && camera3d) {
     camera3d.quaternion.copy(flightQuat);
@@ -1008,15 +1011,6 @@ function animate() {
     camera3d.lookAt(followLookTarget);
   }
 
-   // Apply pending geometry swap (batched, once per frame max)
-  if (geomPending && pendingGeom && mergedPoints) {
-    const oldGeom = mergedPoints.geometry;
-    mergedPoints.geometry = pendingGeom;
-    oldGeom.dispose();
-    pendingGeom = null;
-    geomPending = false;
-  }
-
   if (renderer && scene && camera3d) {
     frameCount++;
     const now = performance.now();
@@ -1026,6 +1020,7 @@ function animate() {
       frameTime = now;
     }
     renderer.render(scene, camera3d);
+    lastRenderTime = now;
   }
 }
 
@@ -1112,9 +1107,9 @@ function updateMergedPointCloud() {
   geom.boundingSphere = null;  // skip auto-compute
 
   if (mergedPoints) {
-    // Defer geometry swap to animate loop (batch updates)
-    pendingGeom = geom;
-    geomPending = true;
+    const oldGeom = mergedPoints.geometry;
+    mergedPoints.geometry = geom;
+    oldGeom.dispose();
   } else {
     const mat = new THREE.PointsMaterial({
       size: guiPointSize,
@@ -1546,8 +1541,6 @@ async function startFrameByFrameFetch(batchId, totalFrames) {
   accumPos = new Float32Array(3000000);
   accumCol = new Float32Array(3000000);
   accumCount = 0;
-  geomPending = false;
-  pendingGeom = null;
   trajectoryDirty = true;
   frameRanges = {};
   totalFramesAvailable = totalFrames;
