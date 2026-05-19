@@ -942,6 +942,7 @@ function onFlightMouseMove(e) {
   }
   if (flightRightDown) {
     if (!camera3d) return;
+    const dir = camera3d.getWorldDirection(new THREE.Vector3());
     const right = new THREE.Vector3();
     right.crossVectors(camera3d.getWorldDirection(new THREE.Vector3()), new THREE.Vector3(0, 1, 0)).normalize();
     const up = new THREE.Vector3().crossVectors(right, dir).normalize();
