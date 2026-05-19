@@ -978,7 +978,7 @@ function animate() {
 
   // Update flight camera orientation from yaw/pitch (unless in follow mode)
   if (!cameraFollowEnabled && camera3d) {
-    const euler = new THREE.Euler(flightPitch, flightYaw, 0, 'YXZ');
+    const euler = new THREE.Euler(flightPitch, flightYaw, flightRoll, "YXZ");
     camera3d.quaternion.setFromEuler(euler);
     updateFlightMovement();
   }
