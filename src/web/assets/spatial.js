@@ -786,6 +786,7 @@ let framePointCloudObjects = {}; // legacy compat
 
 // Image preview elements
 let currentFollowFrameIndex = -1;
+  if (camera3d) { const euler = new THREE.Euler().setFromQuaternion(camera3d.quaternion, "YXZ"); flightYaw = euler.y; flightPitch = euler.x; }
 
 // Scene center from metadata (for camera fitting only, NOT for coordinate transform)
 let metadata = null;
@@ -986,8 +987,6 @@ function animate() {
     camera3d.position.copy(followSmoothedPos);
     camera3d.up.set(0, -1, 0);
     camera3d.lookAt(followLookTarget);
-  } else {
-    camera3d.up.set(0, 1, 0);
   }
 
   if (renderer && scene && camera3d) {
@@ -1243,6 +1242,7 @@ function enableCameraFollow() {
   followSmoothedPos = null;
   followLookTarget = null;
   currentFollowFrameIndex = -1;
+  if (camera3d) { const euler = new THREE.Euler().setFromQuaternion(camera3d.quaternion, "YXZ"); flightYaw = euler.y; flightPitch = euler.x; }
 }
 
 function disableCameraFollow() {
@@ -1250,6 +1250,7 @@ function disableCameraFollow() {
   followSmoothedPos = null;
   followLookTarget = null;
   currentFollowFrameIndex = -1;
+  if (camera3d) { const euler = new THREE.Euler().setFromQuaternion(camera3d.quaternion, "YXZ"); flightYaw = euler.y; flightPitch = euler.x; }
   const imgEl = document.getElementById('frameImagePreview');
   const labelEl = document.getElementById('frameImageLabel');
   if (imgEl) imgEl.style.display = 'none';
@@ -1275,7 +1276,7 @@ function updateCameraFollow(frameIndex) {
     const up = new THREE.Vector3(R[1], R[4], R[7]).normalize();
 
     // Viewer behind (0.5m) and above (0.3m) the tracked camera
-    const viewPos = camPos.clone().addScaledVector(forward, -0.5).addScaledVector(up, 0.3);
+    const viewPos = camPos.clone().addScaledVector(forward, -0.5).addScaledVector(up, -0.3);
     // Look at a point ahead of the tracked camera
     const lookTarget = camPos.clone().addScaledVector(forward, 2.0);
 
@@ -2090,6 +2091,7 @@ async function forceStopProcessing() {
   followSmoothedPos = null;
   followLookTarget = null;
   currentFollowFrameIndex = -1;
+  if (camera3d) { const euler = new THREE.Euler().setFromQuaternion(camera3d.quaternion, "YXZ"); flightYaw = euler.y; flightPitch = euler.x; }
   
   totalFramesAvailable = 0;
   currentFetchFrame = 0;
