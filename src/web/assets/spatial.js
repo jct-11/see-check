@@ -1102,6 +1102,11 @@ function updateMergedPointCloud() {
       }
       pointPositionBuffer = newPosBuffer;
       pointColorBuffer = newColBuffer;
+      // Update geometry attributes to use new buffer (old attr still references old array)
+      if (mergedPoints) {
+        mergedPoints.geometry.setAttribute("position", new THREE.BufferAttribute(pointPositionBuffer, 3));
+        mergedPoints.geometry.setAttribute("color", new THREE.BufferAttribute(pointColorBuffer, 3));
+      }
     }
 
     // Copy only the NEW points into the GPU buffer
