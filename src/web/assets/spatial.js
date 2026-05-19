@@ -738,7 +738,7 @@ let camera3d = null;
 let renderer = null;
 let controls = null; // removed OrbitControls, kept for compat
 let animationId = null;
-let flightYaw = 0, flightPitch = 0, flightRoll = 0;
+let flightQuat = new THREE.Quaternion();
 let flightKeys = {};
 let flightLeftDown = false, flightRightDown = false;
 let flightLastMouseX = 0, flightLastMouseY = 0;
@@ -786,7 +786,7 @@ let framePointCloudObjects = {}; // legacy compat
 
 // Image preview elements
 let currentFollowFrameIndex = -1;
-  if (camera3d) { const euler = new THREE.Euler().setFromQuaternion(camera3d.quaternion, "YXZ"); flightYaw = euler.y; flightPitch = euler.x; flightRoll = euler.z; }
+  if (camera3d) { flightQuat.copy(camera3d.quaternion); }
 
 // Scene center from metadata (for camera fitting only, NOT for coordinate transform)
 let metadata = null;
@@ -848,9 +848,7 @@ async function init3DScene() {
   camera3d.lookAt(0, 0, 0);
 
   // Flight controls state
-  flightYaw = 0;
-  flightPitch = 0;
-  flightRoll = 0;
+  flightQuat.identity();
   flightKeys = {};
   flightLeftDown = false;
   flightRightDown = false;
@@ -921,9 +919,10 @@ function onFlightMouseMove(e) {
   const dx = e.clientX - flightLastMouseX;
   const dy = e.clientY - flightLastMouseY;
   if (flightLeftDown) {
-    flightYaw += dx * FLIGHT_SENSITIVITY;
-    flightPitch -= dy * FLIGHT_SENSITIVITY;
-    // No pitch limit
+    // Quaternion-based rotation: no gimbal lock, full 360
+    const yawQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), dx * FLIGHT_SENSITIVITY);
+    const pitchQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -dy * FLIGHT_SENSITIVITY);
+    flightQuat.premultiply(yawQ).multiply(pitchQ).normalize();
   }
   if (flightRightDown) {
     if (!camera3d) return;
@@ -978,8 +977,7 @@ function animate() {
 
   // Update flight camera orientation from yaw/pitch (unless in follow mode)
   if (!cameraFollowEnabled && camera3d) {
-    const euler = new THREE.Euler(flightPitch, flightYaw, flightRoll, "YXZ");
-    camera3d.quaternion.setFromEuler(euler);
+    camera3d.quaternion.copy(flightQuat);
     updateFlightMovement();
   }
 
@@ -1243,16 +1241,13 @@ function enableCameraFollow() {
   followSmoothedPos = null;
   followLookTarget = null;
   currentFollowFrameIndex = -1;
-  if (camera3d) { const euler = new THREE.Euler().setFromQuaternion(camera3d.quaternion, "YXZ"); flightYaw = euler.y; flightPitch = euler.x; flightRoll = euler.z; }
+  if (camera3d) { flightQuat.copy(camera3d.quaternion); }
 }
 
 function disableCameraFollow() {
   // Capture camera orientation before clearing follow state
   if (camera3d) {
-    const euler = new THREE.Euler().setFromQuaternion(camera3d.quaternion, "YXZ");
-    flightYaw = euler.y;
-    flightPitch = euler.x;
-    flightRoll = euler.z;
+    flightQuat.copy(camera3d.quaternion);
     camera3d.up.set(0, 1, 0);
   }
   cameraFollowEnabled = false;
@@ -1312,9 +1307,7 @@ function reset3DCamera() {
   if (camera3d) {
     const cx = sceneCenter[0], cy = sceneCenter[1], cz = sceneCenter[2];
     camera3d.position.set(cx, cy, cz + sceneScale * 0.5);
-    flightYaw = 0;
-    flightPitch = 0;
-    flightRoll = 0;
+    flightQuat.identity();
   }
 }
 
@@ -1325,12 +1318,7 @@ function fitCameraToScene() {
   camera3d.position.set(cx + dist * 0.5, cy + dist * 0.5, cz + dist);
   // Update flight yaw/pitch to look at scene center
   const lookDir = new THREE.Vector3(cx, cy, cz).sub(camera3d.position).normalize();
-  const euler = new THREE.Euler().setFromQuaternion(
-    new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, -1), lookDir)
-  );
-  flightYaw = euler.y;
-  flightPitch = euler.x;
-  flightRoll = euler.z;
+  flightQuat.setFromUnitVectors(new THREE.Vector3(0, 0, -1), lookDir);
 }
 
 function setViewDirection(direction) {
@@ -1340,12 +1328,7 @@ function setViewDirection(direction) {
   const dir = new THREE.Vector3(direction[0], direction[1], direction[2]).normalize();
   camera3d.position.copy(new THREE.Vector3(cx, cy, cz).addScaledVector(dir, dist));
   const lookDir = new THREE.Vector3(cx, cy, cz).sub(camera3d.position).normalize();
-  const euler = new THREE.Euler().setFromQuaternion(
-    new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, -1), lookDir)
-  );
-  flightYaw = euler.y;
-  flightPitch = euler.x;
-  flightRoll = euler.z;
+  flightQuat.setFromUnitVectors(new THREE.Vector3(0, 0, -1), lookDir);
 }
 
 // ---------- Toggle Visibility ----------
@@ -2102,7 +2085,7 @@ async function forceStopProcessing() {
   followSmoothedPos = null;
   followLookTarget = null;
   currentFollowFrameIndex = -1;
-  if (camera3d) { const euler = new THREE.Euler().setFromQuaternion(camera3d.quaternion, "YXZ"); flightYaw = euler.y; flightPitch = euler.x; flightRoll = euler.z; }
+  if (camera3d) { flightQuat.copy(camera3d.quaternion); }
   
   totalFramesAvailable = 0;
   currentFetchFrame = 0;
