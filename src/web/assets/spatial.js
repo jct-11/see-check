@@ -408,7 +408,7 @@ async function collectFrame() {
       _stopping = true;
       console.log('[Spatial API] 达到目标帧数 ' + spatialCaptureTargetFrames + '，自动停止采集');
       while (collectedFrames.length > 0) { await uploadPendingFrames(); }
-      await stopSpatialCapture();
+      stopSpatialCapture();  // fire-and-forget: don't block .then() callback
     }
   });
 }
