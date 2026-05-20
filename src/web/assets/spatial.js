@@ -433,7 +433,12 @@ async function uploadPendingFrames() {
   
   // 每次最多上传50帧
   const framesToUpload = collectedFrames.splice(0, 50);
-  await uploadFramesToBatchServer(currentBatchId, framesToUpload);
+  isUploading = true;
+  try {
+    await uploadFramesToBatchServer(currentBatchId, framesToUpload);
+  } finally {
+    isUploading = false;
+  }
 }
 
 /**
@@ -676,8 +681,6 @@ async function uploadFramesToBatchServer(batchId, frames) {
   } catch (err) {
     addLog('上传帧失败: ' + err.message, 'err');
     return { success: false, error: err.message };
-  } finally {
-    isUploading = false;
   }
 }
 
