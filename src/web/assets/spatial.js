@@ -2140,7 +2140,7 @@ async function stopSpatialCapture() {
       if (isFetchingFrames) {
         console.log("[DEBUG-complete] waiting for fetchNextFrame to finish...");
         let waitMs = 0;
-        const maxWait = 30000; // 30s timeout
+        const maxWait = 600000; // 10min timeout
         while (isFetchingFrames && waitMs < maxWait) {
           await new Promise(r => setTimeout(r, 500));
           waitMs += 500;
@@ -2222,7 +2222,7 @@ async function forceStopProcessing() {
       if (isFetchingFrames) {
         console.log("[DEBUG-complete] waiting for fetchNextFrame to finish...");
         let waitMs = 0;
-        const maxWait = 30000; // 30s timeout
+        const maxWait = 600000; // 10min timeout
         while (isFetchingFrames && waitMs < maxWait) {
           await new Promise(r => setTimeout(r, 500));
           waitMs += 500;
