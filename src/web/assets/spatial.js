@@ -117,7 +117,6 @@ const SpatialState = {
   camerasData: {},
   accumulatedPoints: [],
   accumulatedColors: [],
-  frameRanges: {},
   cameraFollowEnabled: false,
   currentCameraTargetPos: null,
   currentCameraLookAt: null,
@@ -584,16 +583,17 @@ function resetSpatialState() {
   isUploading = false;
   
   // Clean up per-frame point cloud objects
-  for (const frameIndex in framePointCloudObjects) {
-    const obj = framePointCloudObjects[frameIndex];
-    if (obj && scene) {
-      scene.remove(obj);
-      if (obj.geometry) obj.geometry.dispose();
-      if (obj.material) obj.material.dispose();
+  for (const entry of framePointsObjects) {
+    if (entry.points && scene) {
+      scene.remove(entry.points);
+      if (entry.points.geometry) entry.points.geometry.dispose();
     }
   }
-  framePointCloudObjects = {};
-  frameRanges = {};
+  framePointsObjects = [];
+  if (sharedPointMaterial) {
+    sharedPointMaterial.dispose();
+    sharedPointMaterial = null;
+  }
   camerasData = [];
   currentFetchFrame = 0;
   isFetchingFrames = false;
@@ -764,12 +764,10 @@ let flightKeys = {};
 let flightLeftDown = false, flightRightDown = false;
 let flightLastMouseX = 0, flightLastMouseY = 0;
 
-// Point cloud — single merged BufferGeometry, like viser
-let mergedPoints = null;
-let accumPos = new Float32Array(3000000);  // pre-allocated position buffer
-let accumCol = new Float32Array(3000000);  // pre-allocated color buffer
-let accumCount = 0;                         // total points accumulated
-let frameRanges = {};           // {frameIndex: {start, count}}
+// Point cloud — per-frame Points objects (no merging, no GPU re-upload)
+let framePointsObjects = [];   // array of {points: THREE.Points, frameIndex: number}
+let sharedPointMaterial = null; // shared material for all frame point clouds
+let accumCount = 0;             // total points across all frames (for stats)
 let framePointCloudObjects = {}; // legacy compat
 
 // Trajectory
@@ -1085,60 +1083,14 @@ function addFramePointCloudToScene(frameIndex) {
   const tFilterEnd = performance.now();
   console.log("[DEBUG-pt] frame " + frameIndex + " filtered " + count + " pts from " + numPoints + " raw, loop took " + (tFilterEnd - window.__tFilterStart).toFixed(1) + " ms");
 
-
-  // Ensure accumulation buffer has enough capacity
-  const needed = (accumCount + count) * 3;
-  if (needed > accumPos.length) {
-    const tGrow0 = performance.now();
-    let cap = accumPos.length;
-    while (cap < needed) cap *= 2;
-    const newPos = new Float32Array(cap);
-    const newCol = new Float32Array(cap);
-    const copySize = accumCount * 3;
-    newPos.set(accumPos.subarray(0, copySize));
-    newCol.set(accumCol.subarray(0, copySize));
-    const oldCap = accumPos.length;
-    accumPos = newPos;
-    accumCol = newCol;
-    const tGrow1 = performance.now();
-    console.log('[DEBUG-buf] buffer grew from ' + (oldCap / 1e6).toFixed(1) + 'M to ' + (cap / 1e6).toFixed(1) + 'M floats, copied ' + (copySize / 1e6).toFixed(1) + 'M elements in ' + (tGrow1 - tGrow0).toFixed(1) + ' ms');
-  }
-
-  // Batch-copy filtered points into accumulation buffer
-  accumPos.set(filteredPos.subarray(0, count * 3), accumCount * 3);
-  accumCol.set(filteredCol.subarray(0, count * 3), accumCount * 3);
-  const startIdx = accumCount;
-  accumCount += count;
-  frameRanges[frameIndex] = { start: startIdx, count };
-
-  // Update merged point cloud
-  updateMergedPointCloud();
-  visualizerStats.vertices = accumCount;
-}
-
-// Incremental update: append new points to pre-allocated GPU buffer
-// Avoids rebuilding entire Float32Array from scratch every frame
-function updateMergedPointCloud() {
-  if (!THREE || !scene || accumCount === 0) return;
-
-  const tGeom0 = performance.now();
-
-  // Create geometry from pre-allocated buffers (zero-copy view)
-  const posAttr = new THREE.BufferAttribute(
-    new Float32Array(accumPos.buffer, 0, accumCount * 3), 3);
-  const colAttr = new THREE.BufferAttribute(
-    new Float32Array(accumCol.buffer, 0, accumCount * 3), 3);
+  // Create per-frame Points object — no merging, no GPU re-upload of old data
   const geom = new THREE.BufferGeometry();
-  geom.setAttribute("position", posAttr);
-  geom.setAttribute("color", colAttr);
+  geom.setAttribute("position", new THREE.BufferAttribute(filteredPos.slice(0, count * 3), 3));
+  geom.setAttribute("color", new THREE.BufferAttribute(filteredCol.slice(0, count * 3), 3));
   geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Infinity);
 
-  if (mergedPoints) {
-    const oldGeom = mergedPoints.geometry;
-    mergedPoints.geometry = geom;
-    oldGeom.dispose();
-  } else {
-    const mat = new THREE.PointsMaterial({
+  if (!sharedPointMaterial) {
+    sharedPointMaterial = new THREE.PointsMaterial({
       size: guiPointSize,
       vertexColors: true,
       sizeAttenuation: true,
@@ -1147,13 +1099,18 @@ function updateMergedPointCloud() {
       depthWrite: true,
       depthTest: true,
     });
-    mergedPoints = new THREE.Points(geom, mat);
-    scene.add(mergedPoints);
   }
 
-  const tGeom1 = performance.now();
-  console.log("[DEBUG-geom] updateMergedPointCloud: " + accumCount + " pts, geom swap in " + (tGeom1 - tGeom0).toFixed(1) + " ms");
+  const pointsObj = new THREE.Points(geom, sharedPointMaterial);
+  scene.add(pointsObj);
+  framePointsObjects.push({ points: pointsObj, frameIndex: frameIndex });
+
+  accumCount += count;
+  visualizerStats.vertices = accumCount;
 }
+
+
+// updateMergedPointCloud removed — per-frame Points objects do not need merging
 
 
 
@@ -1382,9 +1339,8 @@ function setViewDirection(direction) {
 // ---------- Toggle Visibility ----------
 
 function togglePointCloud() {
-  for (const frameIndex in framePointCloudObjects) {
-    const obj = framePointCloudObjects[frameIndex];
-    if (obj) obj.visible = !obj.visible;
+  for (const entry of framePointsObjects) {
+    if (entry.points) entry.points.visible = !entry.points.visible;
   }
 }
 
@@ -1514,7 +1470,6 @@ const SpatialVisualizer = {
   // Point cloud
   addFramePointCloud: addFramePointCloudToScene,
   togglePointCloud,
-  updateMergedPointCloud,
 
   // Trajectory
   updateTrajectoryLine,
@@ -1561,18 +1516,20 @@ const SpatialVisualizer = {
 console.log('✅ SpatialVisualizer (viser-compatible) loaded');
 
 async function startFrameByFrameFetch(batchId, totalFrames) {
-  // Clean up old merged point cloud
-  if (mergedPoints) {
-    scene.remove(mergedPoints);
-    if (mergedPoints.geometry) mergedPoints.geometry.dispose();
-    if (mergedPoints.material) mergedPoints.material.dispose();
-    mergedPoints = null;
+  // Clean up old per-frame point cloud objects
+  for (const entry of framePointsObjects) {
+    if (entry.points && scene) {
+      scene.remove(entry.points);
+      if (entry.points.geometry) entry.points.geometry.dispose();
+    }
   }
-  accumPos = new Float32Array(3000000);
-  accumCol = new Float32Array(3000000);
+  framePointsObjects = [];
+  if (sharedPointMaterial) {
+    sharedPointMaterial.dispose();
+    sharedPointMaterial = null;
+  }
   accumCount = 0;
   trajectoryDirty = true;
-  frameRanges = {};
   totalFramesAvailable = totalFrames;
   currentFetchFrame = 0;
   isFetchingFrames = true;
