@@ -440,14 +440,7 @@ async function startStreamingInference(batchId) {
   isBatchProcessing = true;
 
   // ✅ 在发送请求前重新计算关键帧间隔，确保传递正确的值到后端
-  let currentKeyframeInterval = spatialKeyframeInterval;
-  if (spatialMaxImages !== null) {
-    if (spatialMaxImages > 320) {
-      currentKeyframeInterval = Math.floor((spatialMaxImages + 319) / 320);
-    } else {
-      currentKeyframeInterval = 1;
-    }
-  }
+  let currentKeyframeInterval = 1;  // Always 1 — every frame is a keyframe
 
   try {
     // 向服务器发送推理启动请求
@@ -1663,11 +1656,12 @@ async function fetchNextFrame() {
     
     // ✅ 检查点云请求是否成功
     if (!pointCloudResponse.ok) {
-      // 404表示帧还没处理完，等待后重试同一帧
+      // 404: frame not available — skip to next frame (non-keyframe or not yet processed)
       if (pointCloudResponse.status === 404) {
-        addLog('帧 ' + currentFetchFrame + ' 正在处理中，等待...', 'info');
+        console.log('[DEBUG-fetch] frame ' + currentFetchFrame + ' returned 404, skipping');
+        currentFetchFrame++;
         if (isFetchingFrames) {
-          setTimeout(fetchNextFrame, 500);
+          setTimeout(fetchNextFrame, 100);
         }
         return;
       }
@@ -2028,14 +2022,10 @@ function startSpatialCapture() {
     if (maxImagesInput && maxImagesInput.value) {
       spatialMaxImages = parseInt(maxImagesInput.value);
       spatialCaptureTargetFrames = spatialMaxImages;
-      if (spatialMaxImages > 320) {
-        spatialKeyframeInterval = Math.floor((spatialMaxImages + 319) / 320);
-      } else {
-        spatialKeyframeInterval = 1;
-      }
+      spatialKeyframeInterval = 1;  // Always 1 — every frame is a keyframe
     } else {
       spatialMaxImages = null;
-      spatialKeyframeInterval = 1;  // Default when maxImages not set (match viser)
+      spatialKeyframeInterval = 1;
     }
 
     SpatialApi.setCapturing(true);
