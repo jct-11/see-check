@@ -74,8 +74,6 @@ function smoothCameraPose(rawPose) {
 function base64ToFloat32Array(base64Str) {
   if (!base64Str) return new Float32Array(0);
 
-  const t0 = performance.now();
-  
   // 解码 Base64 为 ArrayBuffer
   const binaryStr = atob(base64Str);
   const len = binaryStr.length;
@@ -85,9 +83,7 @@ function base64ToFloat32Array(base64Str) {
     bytes[i] = binaryStr.charCodeAt(i);
   }
   
-  const t1 = performance.now();
   const result = new Float32Array(bytes.buffer);
-  console.log("[DEBUG-b64] decoded " + (len / 1048576).toFixed(2) + " MB in " + (t1 - t0).toFixed(1) + " ms");
   
   return result;
 }
@@ -527,15 +523,12 @@ async function sendFinishInference(batchId) {
   if (!batchId) return;
   
   try {
-    const tSend0 = performance.now();
-    const response = await fetch(`${BATCH_SERVER_URL}/batch/${batchId}/finish_inference`, {
+      const response = await fetch(`${BATCH_SERVER_URL}/batch/${batchId}/finish_inference`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ batch_id: batchId })
     });
     
-    const tSend1 = performance.now();
-    console.log("[DEBUG-complete] sendFinishInference fetch took " + (tSend1 - tSend0).toFixed(0) + "ms");
     if (response.ok) {
       const result = await response.json();
       if (result.success) {
@@ -729,7 +722,6 @@ window.SpatialApi = {
   checkBatchServerStatus: checkBatchServerStatus
 };
 
-
 // ============== 3D Visualization Module (viser-compatible) ==============
 
 // Three.js references (populated by loadThreeJS)
@@ -879,13 +871,11 @@ async function init3DScene() {
     }
   }).observe(container);
 
-
   // Start animation loop
   animate();
 
   // Heartbeat monitor — logs every 5s to detect if event loop is alive
   setInterval(function() {
-    console.log("[DEBUG-heartbeat] event loop alive, sceneObjs=" + (scene ? scene.children.length : 0) + ", accumCount=" + accumCount + ", fps=" + visualizerStats.fps + ", renderTime=" + lastRenderTime);
   }, 5000);
 
   console.log('[Spatial] 3D scene initialized (viser-compatible, no coord transform)');
@@ -1011,11 +1001,8 @@ function animate() {
       frameCount = 0;
       frameTime = now;
     }
-    const tRender0 = performance.now();
     renderer.render(scene, camera3d);
-    const tRender1 = performance.now();
     if (frameCount % 15 === 0) {
-      console.log("[DEBUG-render] frame " + frameCount + " render in " + (tRender1 - tRender0).toFixed(1) + " ms, accumCount=" + accumCount + ", sceneObjs=" + scene.children.length);
     }
     lastRenderTime = now;
   }
@@ -1043,7 +1030,6 @@ function addFramePointCloudToScene(frameIndex) {
   const filteredCol = new Float32Array(maxSize * 3);
   let count = 0;
 
-  window.__tFilterStart = performance.now();
   for (let i = 0; i < numPoints; i += stride) {
     const idx3 = i * 3;
     const x = positions[idx3];
@@ -1067,9 +1053,6 @@ function addFramePointCloudToScene(frameIndex) {
   }
 
   if (count === 0) return;
-
-  const tFilterEnd = performance.now();
-  console.log("[DEBUG-pt] frame " + frameIndex + " filtered " + count + " pts from " + numPoints + " raw, loop took " + (tFilterEnd - window.__tFilterStart).toFixed(1) + " ms");
 
   // Create per-frame Points object — no merging, no GPU re-upload of old data
   const geom = new THREE.BufferGeometry();
@@ -1097,10 +1080,7 @@ function addFramePointCloudToScene(frameIndex) {
   visualizerStats.vertices = accumCount;
 }
 
-
 // updateMergedPointCloud removed — per-frame Points objects do not need merging
-
-
 
 // ---------- Trajectory ----------
 
@@ -1109,8 +1089,7 @@ function updateTrajectoryLine() {
   if (!trajectoryDirty) return;
 
   try {
-    const tTraj0 = performance.now();
-    if (trajectoryLine) {
+      if (trajectoryLine) {
       scene.remove(trajectoryLine);
       if (trajectoryLine.geometry) trajectoryLine.geometry.dispose();
       if (trajectoryLine.material) trajectoryLine.material.dispose();
@@ -1141,8 +1120,6 @@ function updateTrajectoryLine() {
     trajectoryLine = new THREE.Line(geom, mat);
     scene.add(trajectoryLine);
     trajectoryDirty = false;
-    const tTraj1 = performance.now();
-    console.log("[DEBUG-traj] rebuilt with " + pts.length + " cameras, " + curvePts.length + " curve pts in " + (tTraj1 - tTraj0).toFixed(1) + " ms, scene.children=" + scene.children.length);
   } catch (e) {
     console.warn('[Spatial] updateTrajectoryLine failed:', e.message);
   }
@@ -1241,7 +1218,6 @@ function enableCameraFollow() {
 }
 
 function disableCameraFollow() {
-  console.log("[DEBUG-complete] disableCameraFollow START, accumCount=" + accumCount + ", sceneObjs=" + (scene ? scene.children.length : 0));
   // Capture camera orientation before clearing follow state
   if (camera3d) {
     flightQuat.copy(camera3d.quaternion);
@@ -1255,7 +1231,6 @@ function disableCameraFollow() {
   const labelEl = document.getElementById("frameImageLabel");
   if (imgEl) imgEl.style.display = "none";
   if (labelEl) labelEl.style.display = "none";
-  console.log("[DEBUG-complete] disableCameraFollow END");
 }
 
 function updateCameraFollow(frameIndex) {
@@ -1558,10 +1533,7 @@ function loadPLY(url) {
   });
 }
 
-let fetchNextFrameCallCount = 0;
-let fetchNextFrameActive = false;
-let fetchNextFramePending = 0;  // count of pending setTimeout callbacks
-function scheduleNextFetch(delay) {
+function setTimeout(fetchNextFrame, delay) {
   fetchNextFramePending++;
   setTimeout(function() {
     fetchNextFramePending--;
@@ -1573,11 +1545,8 @@ async function fetchNextFrame() {
   fetchNextFrameCallCount++;
   const fetchCallId = fetchNextFrameCallCount;
   if (fetchNextFrameActive) {
-    console.warn('[DEBUG-fetch] OVERLAP DETECTED! call #' + fetchCallId + ' entered while previous still active, total calls: ' + fetchNextFrameCallCount);
   }
   fetchNextFrameActive = true;
-  const tFetch0 = performance.now();
-  
   try {
 
   if (!isFetchingFrames) {
@@ -1592,7 +1561,6 @@ async function fetchNextFrame() {
   
   // ✅ 批量模式：检查是否达到总帧数
   if (totalFramesAvailable && currentFetchFrame >= totalFramesAvailable) {
-    console.log("[DEBUG-complete] fetchNextFrame: all frames fetched, sceneObjs=" + (scene ? scene.children.length : 0) + ", framePointsObjects=" + framePointsObjects.length);
     isFetchingFrames = false;
     var totalFrames = framePointsObjects.length;
     addLog('所有帧点云拉取完成，共 ' + totalFrames + ' 帧', 'ok');
@@ -1638,7 +1606,7 @@ async function fetchNextFrame() {
     
     console.log(`[流式拉取] 暂无新帧，等待中... status=${currentStatus}, processed_frames=${currentProcessedFrames}, currentFetchFrame=${currentFetchFrame}`);
     if (isFetchingFrames) {
-      scheduleNextFetch(500);
+      setTimeout(fetchNextFrame, 500);
     }
     return;
   }
@@ -1649,12 +1617,10 @@ async function fetchNextFrame() {
   }
   
   try {
-    const tNet0 = performance.now();
     const [pointCloudResponse, cameraResponse] = await Promise.all([
       fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + currentFetchFrame + '/point_cloud'),
       fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + currentFetchFrame + '/camera')
     ]);
-    const tNet1 = performance.now();
     
     // Check for network errors
     if (!pointCloudResponse) {
@@ -1665,17 +1631,16 @@ async function fetchNextFrame() {
     if (!pointCloudResponse.ok) {
       // 404: frame not available — skip to next frame (non-keyframe or not yet processed)
       if (pointCloudResponse.status === 404) {
-        console.log('[DEBUG-fetch] frame ' + currentFetchFrame + ' returned 404, skipping');
         currentFetchFrame++;
         if (isFetchingFrames) {
-          scheduleNextFetch(100);
+          setTimeout(fetchNextFrame, 100);
         }
         return;
       }
       addLog('帧 ' + currentFetchFrame + ' 请求失败: ' + pointCloudResponse.status, 'err');
       currentFetchFrame++;
       if (isFetchingFrames) {
-        scheduleNextFetch(100);
+        setTimeout(fetchNextFrame, 100);
       }
       return;
     }
@@ -1710,7 +1675,6 @@ async function fetchNextFrame() {
       addFramePointCloudToScene(currentFetchFrame);
       framePointClouds[currentFetchFrame] = null; // free raw data after accumulation
       if (typeof performance.memory !== "undefined") {
-        console.log("[DEBUG-mem] usedJSHeapSize=" + (performance.memory.usedJSHeapSize / 1048576).toFixed(1) + " MB, totalJSHeapSize=" + (performance.memory.totalJSHeapSize / 1048576).toFixed(1) + " MB");
       }
       
       try {
@@ -1730,35 +1694,33 @@ async function fetchNextFrame() {
       currentFetchFrame++;
       
       const tFetch1 = performance.now();
-      console.log('[DEBUG-fetch] call #' + fetchCallId + ' frame ' + (currentFetchFrame - 1) + ' OK total=' + (tFetch1 - tFetch0).toFixed(0) + 'ms net=' + (tNet1 - tNet0).toFixed(0) + 'ms, accumCount=' + accumCount);
       
       // ✅ 流式模式：先检查状态再继续拉取，避免频繁请求
       // 批量模式：立即继续拉取下一帧
       if (isFetchingFrames) {
         if (totalFramesAvailable) {
-          scheduleNextFetch(50);
+          setTimeout(fetchNextFrame, 50);
         } else {
           // 流式模式：重新检查状态，等待新帧
-          scheduleNextFetch(100);
+          setTimeout(fetchNextFrame, 100);
         }
       }
     } else {
       addLog('帧 ' + currentFetchFrame + ' API 响应不成功', 'info');
       currentFetchFrame++;
       if (isFetchingFrames) {
-        scheduleNextFetch(100);
+        setTimeout(fetchNextFrame, 100);
       }
     }
   } catch (err) {
     addLog('帧 ' + currentFetchFrame + ' 加载失败: ' + err.message, 'err');
     currentFetchFrame++;
     if (isFetchingFrames) {
-      scheduleNextFetch(100);
+      setTimeout(fetchNextFrame, 100);
     }
   }
   } finally {
     fetchNextFrameActive = false;
-    console.log('[DEBUG-fetch] call #' + fetchCallId + ' ended, pending=' + fetchNextFramePending);
   }
 }
 
@@ -2020,7 +1982,6 @@ async function captureCurrentFrameData() {
   const isTemp = !slot;
   let canvas, ctx;
   if (isTemp) {
-    console.log("[DEBUG-cap] frame " + totalFramesCollected + " POOL-FULL fallback (temp canvas)");
     canvas = document.createElement("canvas");
     canvas.width = SPATIAL_FRAME_WIDTH;
     canvas.height = SPATIAL_FRAME_HEIGHT;
@@ -2030,8 +1991,6 @@ async function captureCurrentFrameData() {
     ctx = slot.ctx;
   }
 
-  const tCap0 = performance.now();
-
   var video = document.getElementById("spatialCameraVideo");
   if (!video || !video.videoWidth) {
     console.warn("[Spatial] captureCurrentFrameData: 视频元素不存在或没有数据");
@@ -2040,19 +1999,14 @@ async function captureCurrentFrameData() {
 
   try {
     ctx.drawImage(video, 0, 0, SPATIAL_FRAME_WIDTH, SPATIAL_FRAME_HEIGHT);
-    const tDraw = performance.now();
     if (slot) slot.busy = true;
     // toBlob encodes JPEG asynchronously — pool slots encode in parallel
-    const tBlob0 = performance.now();
     const blob = await new Promise((resolve, reject) =>
       canvas.toBlob(resolve, "image/jpeg", 0.5)
     );
-    const tBlob1 = performance.now();
     if (slot) slot.busy = false;
     const base64 = await _blobToBase64(blob);
-    const tB64 = performance.now();
-    const tag = isTemp ? " TEMP" : " slot=" + (_poolIdx - 1) % CANVAS_POOL_SIZE;
-    console.log("[DEBUG-cap] frame " + totalFramesCollected + tag + " draw=" + (tDraw - tCap0).toFixed(1) + "ms toBlob=" + (tBlob1 - tBlob0).toFixed(1) + "ms blobToBase64=" + (tB64 - tBlob1).toFixed(1) + "ms");
+    
     return { image: base64 };
   } catch (e) {
     if (slot) slot.busy = false;
@@ -2114,10 +2068,8 @@ function startSpatialCapture() {
  * 通知API停止采集，更新按钮状态
  */
 async function stopSpatialCapture() {
-  console.log("[DEBUG-complete] stopSpatialCapture START");
   if (typeof SpatialApi !== 'undefined') {
     SpatialApi.setCapturing(false);
-    console.log("[DEBUG-complete] setCapturing(false) done");
 
     const startBtn = document.getElementById('spatialStartCaptureBtn');
     const stopBtn = document.getElementById('spatialStopCaptureBtn');
@@ -2134,20 +2086,16 @@ async function stopSpatialCapture() {
       // Wait for point cloud fetch to complete before sending finish signal
       // Otherwise backend stops processing early and last frames are lost
       if (isFetchingFrames) {
-        console.log("[DEBUG-complete] waiting for fetchNextFrame to finish...");
         let waitMs = 0;
         const maxWait = 30000; // 30s timeout
         while (isFetchingFrames && waitMs < maxWait) {
           await new Promise(r => setTimeout(r, 500));
           waitMs += 500;
         }
-        console.log("[DEBUG-complete] fetchNextFrame done after " + waitMs + "ms, isFetchingFrames=" + isFetchingFrames);
       }
-      console.log("[DEBUG-complete] calling sendFinishInference...");
       for (let retry = 0; retry < 3; retry++) {
         try {
           await sendFinishInference(currentBatchId);
-          console.log("[DEBUG-complete] sendFinishInference OK");
           break;
         } catch (e) {
           console.warn("sendFinishInference attempt " + (retry + 1) + " failed:", e.message);
@@ -2158,7 +2106,6 @@ async function stopSpatialCapture() {
     
     addLog('空间记忆采集已停止', 'info');
   }
-  console.log("[DEBUG-complete] stopSpatialCapture END");
 }
 
 async function forceStopProcessing() {
@@ -2215,20 +2162,16 @@ async function forceStopProcessing() {
       // Wait for point cloud fetch to complete before sending finish signal
       // Otherwise backend stops processing early and last frames are lost
       if (isFetchingFrames) {
-        console.log("[DEBUG-complete] waiting for fetchNextFrame to finish...");
         let waitMs = 0;
         const maxWait = 30000; // 30s timeout
         while (isFetchingFrames && waitMs < maxWait) {
           await new Promise(r => setTimeout(r, 500));
           waitMs += 500;
         }
-        console.log("[DEBUG-complete] fetchNextFrame done after " + waitMs + "ms, isFetchingFrames=" + isFetchingFrames);
       }
-      console.log("[DEBUG-complete] calling sendFinishInference...");
       for (let retry = 0; retry < 3; retry++) {
         try {
           await sendFinishInference(currentBatchId);
-          console.log("[DEBUG-complete] sendFinishInference OK");
           break;
         } catch (e) {
           console.warn("sendFinishInference attempt " + (retry + 1) + " failed:", e.message);
