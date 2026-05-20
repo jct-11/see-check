@@ -761,10 +761,23 @@ let camera3d = null;
 let renderer = null;
 let controls = null; // removed OrbitControls, kept for compat
 let animationId = null;
-let flightQuat = null;
-let flightKeys = {};
+// Camera rotation — Euler smoothing
+let currentEuler = null;
+let targetEuler = null;
+// Movement state — 3-axis velocity with damping
+let moveState = { x: 0, y: 0, z: 0 };
+let currentVelocity = new THREE.Vector3();
+// Mouse state
 let flightLeftDown = false, flightRightDown = false;
 let flightLastMouseX = 0, flightLastMouseY = 0;
+// Movement mode: false=View-Relative, true=Horizontal
+let flightModeHorizontal = false;
+// Reset animation state
+let isResetting = false;
+let resetStartTime = 0;
+let resetStartPos = null;
+let resetStartTarget = null;
+const RESET_DURATION = 0.8;
 
 // Point cloud — per-frame Points objects (no merging, no GPU re-upload)
 let framePointsObjects = [];   // array of {points: THREE.Points, frameIndex: number}
@@ -869,12 +882,16 @@ async function init3DScene() {
   camera3d.lookAt(0, 0, 0);
 
   // Flight controls state
-  flightQuat = new THREE.Quaternion();
-  flightKeys = {};
+  currentEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+  targetEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+  moveState = { x: 0, y: 0, z: 0 };
+  currentVelocity = new THREE.Vector3();
   flightLeftDown = false;
   flightRightDown = false;
   flightLastMouseX = 0;
   flightLastMouseY = 0;
+  resetStartPos = new THREE.Vector3();
+  resetStartTarget = new THREE.Vector3();
 
   // Mouse: left drag = rotate, right drag = pan, scroll = zoom
   renderer.domElement.addEventListener('mousedown', onFlightMouseDown);
@@ -884,6 +901,23 @@ async function init3DScene() {
   renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
   window.addEventListener('keydown', onFlightKeyDown);
   window.addEventListener('keyup', onFlightKeyUp);
+
+  // Mode toggle and reset keys (separate from movement keys)
+  window.addEventListener('keydown', function(e) {
+    if (cameraFollowEnabled) return;
+    if (e.key.toLowerCase() === 'f' && !e.repeat) {
+      flightModeHorizontal = !flightModeHorizontal;
+      console.log('[Spatial] Flight mode:', flightModeHorizontal ? 'Horizontal' : 'View-Relative');
+    }
+    if (e.key.toLowerCase() === 'r' && !e.repeat) {
+      const cx = sceneCenter[0], cy = sceneCenter[1], cz = sceneCenter[2];
+      const dist = sceneScale * 0.8;
+      resetStartPos.copy(camera3d.position);
+      resetStartTarget.set(cx + dist * 0.5, cy + dist * 0.5, cz + dist);
+      isResetting = true;
+      resetStartTime = performance.now() / 1000;
+    }
+  });
 
   // ResizeObserver
   new ResizeObserver(entries => {
@@ -924,9 +958,10 @@ function onWindowResize() {
 
 // ---------- Flight Controls ----------
 
-const FLIGHT_MOVE_SPEED = 0.08;
-const FLIGHT_ZOOM_SPEED = 0.15;
+const FLIGHT_BASE_SPEED = 2.0;
+const FLIGHT_DAMPING = 25.0;
 const FLIGHT_SENSITIVITY = 0.003;
+const FLIGHT_SCROLL_SPEED = 0.005;
 
 function onFlightMouseDown(e) {
   if (e.button === 0) { flightLeftDown = true; }
@@ -945,20 +980,16 @@ function onFlightMouseMove(e) {
   const dx = e.clientX - flightLastMouseX;
   const dy = e.clientY - flightLastMouseY;
   if (flightLeftDown) {
-    // All-local rotation (like a flashlight): both axes from current camera orientation
-    const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(flightQuat);
-    const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(flightQuat);
-    const yawQ = new THREE.Quaternion().setFromAxisAngle(camUp, dx * FLIGHT_SENSITIVITY);
-    const pitchQ = new THREE.Quaternion().setFromAxisAngle(camRight, dy * FLIGHT_SENSITIVITY);
-    flightQuat.multiply(yawQ).multiply(pitchQ).normalize();
+    targetEuler.y -= dx * FLIGHT_SENSITIVITY;
+    targetEuler.x -= dy * FLIGHT_SENSITIVITY;
+    targetEuler.x = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, targetEuler.x));
   }
   if (flightRightDown) {
     if (!camera3d) return;
     const dir = camera3d.getWorldDirection(new THREE.Vector3());
-    const right = new THREE.Vector3();
-    right.crossVectors(camera3d.getWorldDirection(new THREE.Vector3()), new THREE.Vector3(0, 1, 0)).normalize();
+    const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
     const up = new THREE.Vector3().crossVectors(right, dir).normalize();
-    const scale = FLIGHT_MOVE_SPEED * 0.03;
+    const scale = FLIGHT_BASE_SPEED * 0.005;
     camera3d.position.addScaledVector(right, -dx * scale);
     camera3d.position.addScaledVector(up, dy * scale);
   }
@@ -970,33 +1001,85 @@ function onFlightWheel(e) {
   e.preventDefault();
   if (!camera3d || cameraFollowEnabled) return;
   const dir = camera3d.getWorldDirection(new THREE.Vector3());
-  camera3d.position.addScaledVector(dir, e.deltaY > 0 ? -FLIGHT_ZOOM_SPEED : FLIGHT_ZOOM_SPEED);
+  camera3d.position.addScaledVector(dir, -e.deltaY * FLIGHT_SCROLL_SPEED);
 }
 
 function onFlightKeyDown(e) {
-  flightKeys[e.key.toLowerCase()] = true;
-  // Prevent browser defaults for flight keys
-  if (['w','a','s','d','q','e'].includes(e.key.toLowerCase())) {
+  const key = e.key.toLowerCase();
+  if (['w','a','s','d','q','e','f','r'].includes(key)) {
     e.preventDefault();
+  }
+  switch (key) {
+    case 'w': moveState.z = 1; break;
+    case 's': moveState.z = -1; break;
+    case 'a': moveState.x = -1; break;
+    case 'd': moveState.x = 1; break;
+    case 'q': moveState.y = -1; break;
+    case 'e': moveState.y = 1; break;
   }
 }
 
 function onFlightKeyUp(e) {
-  flightKeys[e.key.toLowerCase()] = false;
+  const key = e.key.toLowerCase();
+  switch (key) {
+    case 'w': case 's': moveState.z = 0; break;
+    case 'a': case 'd': moveState.x = 0; break;
+    case 'q': case 'e': moveState.y = 0; break;
+  }
 }
 
-function updateFlightMovement() {
+function updateFlightMovement(delta) {
   if (!camera3d || cameraFollowEnabled) return;
-  const dir = camera3d.getWorldDirection(new THREE.Vector3());
-  const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
-  const up = new THREE.Vector3().crossVectors(right, dir).normalize();
-  const speed = FLIGHT_MOVE_SPEED;
-  if (flightKeys['w']) camera3d.position.addScaledVector(dir, speed);
-  if (flightKeys['s']) camera3d.position.addScaledVector(dir, -speed);
-  if (flightKeys['a']) camera3d.position.addScaledVector(right, -speed);
-  if (flightKeys['d']) camera3d.position.addScaledVector(right, speed);
-  if (flightKeys['q']) camera3d.position.addScaledVector(up, -speed);
-  if (flightKeys['e']) camera3d.position.addScaledVector(up, speed);
+
+  const targetVel = new THREE.Vector3(moveState.x, moveState.y, moveState.z);
+  if (targetVel.length() > 1) targetVel.normalize();
+  targetVel.multiplyScalar(FLIGHT_BASE_SPEED);
+
+  const damping = Math.min(1.0, FLIGHT_DAMPING * delta);
+  if (!currentVelocity) currentVelocity = new THREE.Vector3();
+  currentVelocity.lerp(targetVel, damping);
+
+  if (flightModeHorizontal) {
+    const dir = camera3d.getWorldDirection(new THREE.Vector3());
+    dir.y = 0;
+    if (dir.length() < 0.001) dir.set(0, 0, 1);
+    dir.normalize();
+    const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
+    camera3d.position.addScaledVector(dir, currentVelocity.z * delta);
+    camera3d.position.addScaledVector(right, currentVelocity.x * delta);
+    camera3d.position.y += currentVelocity.y * delta;
+  } else {
+    const dir = camera3d.getWorldDirection(new THREE.Vector3());
+    const right = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
+    const up = new THREE.Vector3().crossVectors(right, dir).normalize();
+    camera3d.position.addScaledVector(dir, currentVelocity.z * delta);
+    camera3d.position.addScaledVector(right, currentVelocity.x * delta);
+    camera3d.position.addScaledVector(up, currentVelocity.y * delta);
+  }
+}
+
+function updateCameraRotation(delta) {
+  if (cameraFollowEnabled || !currentEuler || !targetEuler) return;
+  const smooth = 1.0 - Math.pow(0.001, delta);
+  currentEuler.x += (targetEuler.x - currentEuler.x) * smooth;
+  currentEuler.y += (targetEuler.y - currentEuler.y) * smooth;
+  currentEuler.z += (targetEuler.z - currentEuler.z) * smooth;
+  camera3d.quaternion.setFromEuler(currentEuler);
+}
+
+function updateReset(delta) {
+  if (!isResetting || !resetStartPos || !resetStartTarget) return;
+  const elapsed = (performance.now() / 1000) - resetStartTime;
+  if (elapsed >= RESET_DURATION) {
+    camera3d.position.copy(resetStartTarget);
+    targetEuler.set(0, 0, 0);
+    currentEuler.set(0, 0, 0);
+    isResetting = false;
+    return;
+  }
+  const t = elapsed / RESET_DURATION;
+  const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  camera3d.position.lerpVectors(resetStartPos, resetStartTarget, ease);
 }
 
 // ---------- Animation Loop ----------
@@ -1009,26 +1092,33 @@ function animate() {
   const maxFps = cameraFollowEnabled ? 15 : 30;
   if (now - lastRenderTime < (1000 / maxFps)) return;
 
-  // Update flight camera orientation from yaw/pitch (unless in follow mode)
-  if (!cameraFollowEnabled && camera3d) {
-    camera3d.quaternion.copy(flightQuat);
-    updateFlightMovement();
-  }
+  // Delta time for damping (capped to 100ms to prevent jumps)
+  const delta = Math.min((now - lastRenderTime) / 1000, 0.1);
 
   // Camera follow (OpenCV y-down -> flip camera up)
   if (cameraFollowEnabled && followSmoothedPos && followLookTarget) {
     camera3d.position.copy(followSmoothedPos);
     camera3d.up.set(0, -1, 0);
     camera3d.lookAt(followLookTarget);
+    // Sync Euler so rotation is continuous on follow exit
+    if (currentEuler && targetEuler) {
+      currentEuler.setFromQuaternion(camera3d.quaternion, 'YXZ');
+      targetEuler.copy(currentEuler);
+    }
+  } else if (!cameraFollowEnabled && camera3d) {
+    // Free-flight: reset animation, rotation smoothing, movement
+    updateReset(delta);
+    updateCameraRotation(delta);
+    updateFlightMovement(delta);
   }
 
   if (renderer && scene && camera3d) {
     frameCount++;
-    const now = performance.now();
-    if (now - frameTime >= 1000) {
-      visualizerStats.fps = Math.round(frameCount / ((now - frameTime) / 1000));
+    const now2 = performance.now();
+    if (now2 - frameTime >= 1000) {
+      visualizerStats.fps = Math.round(frameCount / ((now2 - frameTime) / 1000));
       frameCount = 0;
-      frameTime = now;
+      frameTime = now2;
     }
     const tRender0 = performance.now();
     renderer.render(scene, camera3d);
@@ -1256,14 +1346,15 @@ function enableCameraFollow() {
   followSmoothedPos = null;
   followLookTarget = null;
   currentFollowFrameIndex = -1;
-  if (camera3d) { flightQuat.copy(camera3d.quaternion); }
+  if (camera3d && currentEuler && targetEuler) { currentEuler.setFromQuaternion(camera3d.quaternion, 'YXZ'); targetEuler.copy(currentEuler); }
 }
 
 function disableCameraFollow() {
   console.log("[DEBUG-complete] disableCameraFollow START, accumCount=" + accumCount + ", sceneObjs=" + (scene ? scene.children.length : 0));
   // Capture camera orientation before clearing follow state
-  if (camera3d) {
-    flightQuat.copy(camera3d.quaternion);
+  if (camera3d && currentEuler && targetEuler) {
+    currentEuler.setFromQuaternion(camera3d.quaternion, 'YXZ');
+    targetEuler.copy(currentEuler);
     camera3d.up.set(0, 1, 0);
   }
   cameraFollowEnabled = false;
@@ -1324,7 +1415,8 @@ function reset3DCamera() {
   if (camera3d) {
     const cx = sceneCenter[0], cy = sceneCenter[1], cz = sceneCenter[2];
     camera3d.position.set(cx, cy, cz + sceneScale * 0.5);
-    flightQuat = new THREE.Quaternion();
+    if (currentEuler) currentEuler.set(0, 0, 0);
+    if (targetEuler) targetEuler.set(0, 0, 0);
   }
 }
 
@@ -1333,9 +1425,10 @@ function fitCameraToScene() {
   const cx = sceneCenter[0], cy = sceneCenter[1], cz = sceneCenter[2];
   const dist = sceneScale * 0.8;
   camera3d.position.set(cx + dist * 0.5, cy + dist * 0.5, cz + dist);
-  // Update flight yaw/pitch to look at scene center
   const lookDir = new THREE.Vector3(cx, cy, cz).sub(camera3d.position).normalize();
-  flightQuat.setFromUnitVectors(new THREE.Vector3(0, 0, -1), lookDir);
+  camera3d.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), lookDir);
+  if (currentEuler) currentEuler.setFromQuaternion(camera3d.quaternion, 'YXZ');
+  if (targetEuler) targetEuler.copy(currentEuler);
 }
 
 function setViewDirection(direction) {
@@ -1345,7 +1438,9 @@ function setViewDirection(direction) {
   const dir = new THREE.Vector3(direction[0], direction[1], direction[2]).normalize();
   camera3d.position.copy(new THREE.Vector3(cx, cy, cz).addScaledVector(dir, dist));
   const lookDir = new THREE.Vector3(cx, cy, cz).sub(camera3d.position).normalize();
-  flightQuat.setFromUnitVectors(new THREE.Vector3(0, 0, -1), lookDir);
+  camera3d.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), lookDir);
+  if (currentEuler) currentEuler.setFromQuaternion(camera3d.quaternion, 'YXZ');
+  if (targetEuler) targetEuler.copy(currentEuler);
 }
 
 // ---------- Toggle Visibility ----------
@@ -2211,7 +2306,7 @@ async function forceStopProcessing() {
   followSmoothedPos = null;
   followLookTarget = null;
   currentFollowFrameIndex = -1;
-  if (camera3d) { flightQuat.copy(camera3d.quaternion); }
+  if (camera3d && currentEuler && targetEuler) { currentEuler.setFromQuaternion(camera3d.quaternion, 'YXZ'); targetEuler.copy(currentEuler); }
   
   totalFramesAvailable = 0;
   currentFetchFrame = 0;
