@@ -1985,10 +1985,11 @@ async function switchToLocalCamera() {
   }
 }
 
-// Shared canvas for capture — reused to prevent GPU memory fragmentation
-let _captureCanvas = null;
-let _captureCtx = null;
-let _captureBusy = false;  // prevents drawImage overwrite during async toBlob
+// Canvas pool for parallel toBlob encoding
+// Each canvas is independent — toBlob runs on browser's encoder thread pool concurrently
+const CANVAS_POOL_SIZE = 4;  // supports up to ~20fps (4 × 50ms encode = 200ms window)
+let _canvasPool = [];         // [{canvas, ctx, busy}]
+let _poolIdx = 0;
 
 // Helper: convert Blob to base64 (async via FileReader, off main thread)
 function _blobToBase64(blob) {
@@ -2000,32 +2001,28 @@ function _blobToBase64(blob) {
   });
 }
 
-// Capture sample rate — only encode every Nth frame (1=all, 3=every 3rd)
-// Used to diagnose whether toBlob slowdown is from encoder queue pressure
-let _captureSampleN = 3;
-let _captureSampleCounter = 0;
+function _ensureCanvasPool() {
+  if (_canvasPool.length > 0) return;
+  for (let i = 0; i < CANVAS_POOL_SIZE; i++) {
+    const canvas = document.createElement("canvas");
+    canvas.width = SPATIAL_FRAME_WIDTH;
+    canvas.height = SPATIAL_FRAME_HEIGHT;
+    _canvasPool.push({ canvas, ctx: canvas.getContext("2d"), busy: false });
+  }
+}
 
 async function captureCurrentFrameData() {
-  // Sample rate throttle: skip frames to reduce encoder pressure (diagnostic mode)
-  _captureSampleCounter++;
-  if (_captureSampleN > 1 && _captureSampleCounter % _captureSampleN !== 0) {
-    var video = document.getElementById("spatialCameraVideo");
-    if (!video || !video.videoWidth) return null;
-    if (!_captureCanvas) {
-      _captureCanvas = document.createElement("canvas");
-      _captureCanvas.width = SPATIAL_FRAME_WIDTH;
-      _captureCanvas.height = SPATIAL_FRAME_HEIGHT;
-      _captureCtx = _captureCanvas.getContext("2d");
-    }
-    // Still call drawImage to keep video frame consumption going (prevents buffer buildup)
-    _captureCtx.drawImage(video, 0, 0, SPATIAL_FRAME_WIDTH, SPATIAL_FRAME_HEIGHT);
-    console.log("[DEBUG-cap] frame " + totalFramesCollected + " SKIP (sample rate 1/" + _captureSampleN + ")");
-    return null;
-  }
+  _ensureCanvasPool();
 
-  // Skip if previous async encoding still in progress (canvas content not yet consumed)
-  if (_captureBusy) {
-    console.warn("[DEBUG-cap] frame " + totalFramesCollected + " SKIPPED (previous encode in progress)");
+  // Find a free canvas in the pool (round-robin)
+  let slot = null;
+  for (let attempt = 0; attempt < CANVAS_POOL_SIZE; attempt++) {
+    const s = _canvasPool[_poolIdx % CANVAS_POOL_SIZE];
+    _poolIdx++;
+    if (!s.busy) { slot = s; break; }
+  }
+  if (!slot) {
+    console.warn("[DEBUG-cap] frame " + totalFramesCollected + " SKIP (all " + CANVAS_POOL_SIZE + " canvases busy)");
     return null;
   }
 
@@ -2037,30 +2034,23 @@ async function captureCurrentFrameData() {
     return null;
   }
 
-  if (!_captureCanvas) {
-    _captureCanvas = document.createElement("canvas");
-    _captureCanvas.width = SPATIAL_FRAME_WIDTH;
-    _captureCanvas.height = SPATIAL_FRAME_HEIGHT;
-    _captureCtx = _captureCanvas.getContext("2d");
-  }
-
   try {
-    _captureCtx.drawImage(video, 0, 0, SPATIAL_FRAME_WIDTH, SPATIAL_FRAME_HEIGHT);
+    slot.ctx.drawImage(video, 0, 0, SPATIAL_FRAME_WIDTH, SPATIAL_FRAME_HEIGHT);
     const tDraw = performance.now();
-    _captureBusy = true;
-    // toBlob encodes JPEG asynchronously (off main thread)
+    slot.busy = true;
+    // toBlob encodes JPEG asynchronously — pool slots encode in parallel
     const tBlob0 = performance.now();
     const blob = await new Promise((resolve, reject) =>
-      _captureCanvas.toBlob(resolve, "image/jpeg", 0.5)
+      slot.canvas.toBlob(resolve, "image/jpeg", 0.5)
     );
     const tBlob1 = performance.now();
-    _captureBusy = false;
+    slot.busy = false;
     const base64 = await _blobToBase64(blob);
     const tB64 = performance.now();
-    console.log("[DEBUG-cap] frame " + totalFramesCollected + " ENCODE toBlob=" + (tBlob1 - tBlob0).toFixed(1) + "ms blobToBase64=" + (tB64 - tBlob1).toFixed(1) + "ms");
+    console.log("[DEBUG-cap] frame " + totalFramesCollected + " slot=" + (_poolIdx - 1) % CANVAS_POOL_SIZE + " draw=" + (tDraw - tCap0).toFixed(1) + "ms toBlob=" + (tBlob1 - tBlob0).toFixed(1) + "ms blobToBase64=" + (tB64 - tBlob1).toFixed(1) + "ms");
     return { image: base64 };
   } catch (e) {
-    _captureBusy = false;
+    slot.busy = false;
     console.error("[Spatial] captureCurrentFrameData: capture failed:", e.message);
     return null;
   }
