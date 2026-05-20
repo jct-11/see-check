@@ -532,12 +532,15 @@ async function sendFinishInference(batchId) {
   if (!batchId) return;
   
   try {
+    const tSend0 = performance.now();
     const response = await fetch(`${BATCH_SERVER_URL}/batch/${batchId}/finish_inference`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ batch_id: batchId })
     });
     
+    const tSend1 = performance.now();
+    console.log("[DEBUG-complete] sendFinishInference fetch took " + (tSend1 - tSend0).toFixed(0) + "ms");
     if (response.ok) {
       const result = await response.json();
       if (result.success) {
@@ -1562,6 +1565,15 @@ function loadPLY(url) {
 
 let fetchNextFrameCallCount = 0;
 let fetchNextFrameActive = false;
+let fetchNextFramePending = 0;  // count of pending setTimeout callbacks
+function scheduleNextFetch(delay) {
+  fetchNextFramePending++;
+  setTimeout(function() {
+    fetchNextFramePending--;
+    fetchNextFrame();
+  }, delay);
+}
+
 async function fetchNextFrame() {
   fetchNextFrameCallCount++;
   const fetchCallId = fetchNextFrameCallCount;
@@ -1631,7 +1643,7 @@ async function fetchNextFrame() {
     
     console.log(`[流式拉取] 暂无新帧，等待中... status=${currentStatus}, processed_frames=${currentProcessedFrames}, currentFetchFrame=${currentFetchFrame}`);
     if (isFetchingFrames) {
-      setTimeout(fetchNextFrame, 500);
+      scheduleNextFetch(500);
     }
     return;
   }
@@ -1642,10 +1654,12 @@ async function fetchNextFrame() {
   }
   
   try {
+    const tNet0 = performance.now();
     const [pointCloudResponse, cameraResponse] = await Promise.all([
       fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + currentFetchFrame + '/point_cloud'),
       fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + currentFetchFrame + '/camera')
     ]);
+    const tNet1 = performance.now();
     
     // Check for network errors
     if (!pointCloudResponse) {
@@ -1659,14 +1673,14 @@ async function fetchNextFrame() {
         console.log('[DEBUG-fetch] frame ' + currentFetchFrame + ' returned 404, skipping');
         currentFetchFrame++;
         if (isFetchingFrames) {
-          setTimeout(fetchNextFrame, 100);
+          scheduleNextFetch(100);
         }
         return;
       }
       addLog('帧 ' + currentFetchFrame + ' 请求失败: ' + pointCloudResponse.status, 'err');
       currentFetchFrame++;
       if (isFetchingFrames) {
-        setTimeout(fetchNextFrame, 100);
+        scheduleNextFetch(100);
       }
       return;
     }
@@ -1721,35 +1735,35 @@ async function fetchNextFrame() {
       currentFetchFrame++;
       
       const tFetch1 = performance.now();
-      console.log('[DEBUG-fetch] call #' + fetchCallId + ' frame ' + (currentFetchFrame - 1) + ' OK in ' + (tFetch1 - tFetch0).toFixed(0) + ' ms, accumCount=' + accumCount);
+      console.log('[DEBUG-fetch] call #' + fetchCallId + ' frame ' + (currentFetchFrame - 1) + ' OK total=' + (tFetch1 - tFetch0).toFixed(0) + 'ms net=' + (tNet1 - tNet0).toFixed(0) + 'ms, accumCount=' + accumCount);
       
       // ✅ 流式模式：先检查状态再继续拉取，避免频繁请求
       // 批量模式：立即继续拉取下一帧
       if (isFetchingFrames) {
         if (totalFramesAvailable) {
-          setTimeout(fetchNextFrame, 50);
+          scheduleNextFetch(50);
         } else {
           // 流式模式：重新检查状态，等待新帧
-          setTimeout(fetchNextFrame, 100);
+          scheduleNextFetch(100);
         }
       }
     } else {
       addLog('帧 ' + currentFetchFrame + ' API 响应不成功', 'info');
       currentFetchFrame++;
       if (isFetchingFrames) {
-        setTimeout(fetchNextFrame, 100);
+        scheduleNextFetch(100);
       }
     }
   } catch (err) {
     addLog('帧 ' + currentFetchFrame + ' 加载失败: ' + err.message, 'err');
     currentFetchFrame++;
     if (isFetchingFrames) {
-      setTimeout(fetchNextFrame, 100);
+      scheduleNextFetch(100);
     }
   }
   } finally {
     fetchNextFrameActive = false;
-    console.log('[DEBUG-fetch] call #' + fetchCallId + ' ended, active reset');
+    console.log('[DEBUG-fetch] call #' + fetchCallId + ' ended, pending=' + fetchNextFramePending);
   }
 }
 
