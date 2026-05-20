@@ -73,18 +73,30 @@ function smoothCameraPose(rawPose) {
  */
 function base64ToFloat32Array(base64Str) {
   if (!base64Str) return new Float32Array(0);
+
+  const t0 = performance.now();
   
   // 解码 Base64 为 ArrayBuffer
   const binaryStr = atob(base64Str);
   const len = binaryStr.length;
-  const bytes = new Uint8Array(len);
   
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryStr.charCodeAt(i);
+  let bytes;
+  if (len > 100000) {
+    // [DEBUG-b64] Optimized path for large payloads: use TextEncoder instead of charCodeAt loop
+    const encoder = new TextEncoder();
+    bytes = encoder.encode(binaryStr);
+  } else {
+    bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryStr.charCodeAt(i);
+    }
   }
   
-  // 转换为 Float32Array
-  return new Float32Array(bytes.buffer);
+  const t1 = performance.now();
+  const result = new Float32Array(bytes.buffer);
+  console.log('[DEBUG-b64] decoded ' + (len / 1048576).toFixed(2) + ' MB in ' + (t1 - t0).toFixed(1) + ' ms');
+  
+  return result;
 }
 
 // ============== 全局状态封装 ==============
@@ -1070,14 +1082,19 @@ function addFramePointCloudToScene(frameIndex) {
   // Ensure accumulation buffer has enough capacity
   const needed = (accumCount + count) * 3;
   if (needed > accumPos.length) {
+    const tGrow0 = performance.now();
     let cap = accumPos.length;
     while (cap < needed) cap *= 2;
     const newPos = new Float32Array(cap);
     const newCol = new Float32Array(cap);
-    newPos.set(accumPos.subarray(0, accumCount * 3));
-    newCol.set(accumCol.subarray(0, accumCount * 3));
+    const copySize = accumCount * 3;
+    newPos.set(accumPos.subarray(0, copySize));
+    newCol.set(accumCol.subarray(0, copySize));
+    const oldCap = accumPos.length;
     accumPos = newPos;
     accumCol = newCol;
+    const tGrow1 = performance.now();
+    console.log('[DEBUG-buf] buffer grew from ' + (oldCap / 1e6).toFixed(1) + 'M to ' + (cap / 1e6).toFixed(1) + 'M floats, copied ' + (copySize / 1e6).toFixed(1) + 'M elements in ' + (tGrow1 - tGrow0).toFixed(1) + ' ms');
   }
 
   // Batch-copy filtered points into accumulation buffer
@@ -1580,7 +1597,19 @@ function loadPLY(url) {
   });
 }
 
+let fetchNextFrameCallCount = 0;
+let fetchNextFrameActive = false;
 async function fetchNextFrame() {
+  fetchNextFrameCallCount++;
+  const fetchCallId = fetchNextFrameCallCount;
+  if (fetchNextFrameActive) {
+    console.warn('[DEBUG-fetch] OVERLAP DETECTED! call #' + fetchCallId + ' entered while previous still active, total calls: ' + fetchNextFrameCallCount);
+  }
+  fetchNextFrameActive = true;
+  const tFetch0 = performance.now();
+  
+  try {
+
   if (!isFetchingFrames) {
     isFetchingFrames = false;
     var totalFrames = Object.keys(framePointCloudObjects).length;
@@ -1723,6 +1752,9 @@ async function fetchNextFrame() {
       
       currentFetchFrame++;
       
+      const tFetch1 = performance.now();
+      console.log('[DEBUG-fetch] call #' + fetchCallId + ' frame ' + (currentFetchFrame - 1) + ' OK in ' + (tFetch1 - tFetch0).toFixed(0) + ' ms, accumCount=' + accumCount);
+      
       // ✅ 流式模式：先检查状态再继续拉取，避免频繁请求
       // 批量模式：立即继续拉取下一帧
       if (isFetchingFrames) {
@@ -1746,6 +1778,10 @@ async function fetchNextFrame() {
     if (isFetchingFrames) {
       setTimeout(fetchNextFrame, 100);
     }
+  }
+  } finally {
+    fetchNextFrameActive = false;
+    console.log('[DEBUG-fetch] call #' + fetchCallId + ' ended, active reset');
   }
 }
 
