@@ -409,7 +409,7 @@ async function collectFrame() {
   if (totalFramesCollected >= spatialCaptureTargetFrames) {
     console.log('[Spatial API] 达到目标帧数 ' + spatialCaptureTargetFrames + '，自动停止采集');
     while (collectedFrames.length > 0) { await uploadPendingFrames(); }
-    stopSpatialCapture();
+    await stopSpatialCapture();
   }
 
   // Legacy submitBatch removed — streaming inference handles processing
@@ -1945,7 +1945,7 @@ async function switchToLocalCamera() {
     
     // 使用选中的设备
     const stream = await navigator.mediaDevices.getUserMedia({ 
-      video: { deviceId: { exact: selectedDeviceId } } 
+      video: { deviceId: { exact: selectedDeviceId }, width: { ideal: SPATIAL_FRAME_WIDTH }, height: { ideal: SPATIAL_FRAME_HEIGHT }, frameRate: { ideal: 10 } } 
     });
     
     spatialVideoStream = stream;
@@ -2014,7 +2014,7 @@ async function captureCurrentFrameData() {
     _captureBusy = true;
     // toBlob encodes JPEG asynchronously (off main thread) — critical for CPU stability
     const blob = await new Promise((resolve, reject) =>
-      _captureCanvas.toBlob(resolve, "image/jpeg", 0.6)
+      _captureCanvas.toBlob(resolve, "image/jpeg", 0.5)
     );
     _captureBusy = false;
     const base64 = await _blobToBase64(blob);
