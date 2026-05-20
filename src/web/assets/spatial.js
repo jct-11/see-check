@@ -80,21 +80,14 @@ function base64ToFloat32Array(base64Str) {
   const binaryStr = atob(base64Str);
   const len = binaryStr.length;
   
-  let bytes;
-  if (len > 100000) {
-    // [DEBUG-b64] Optimized path for large payloads: use TextEncoder instead of charCodeAt loop
-    const encoder = new TextEncoder();
-    bytes = encoder.encode(binaryStr);
-  } else {
-    bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-      bytes[i] = binaryStr.charCodeAt(i);
-    }
+    const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryStr.charCodeAt(i);
   }
   
   const t1 = performance.now();
   const result = new Float32Array(bytes.buffer);
-  console.log('[DEBUG-b64] decoded ' + (len / 1048576).toFixed(2) + ' MB in ' + (t1 - t0).toFixed(1) + ' ms');
+  console.log("[DEBUG-b64] decoded " + (len / 1048576).toFixed(2) + " MB in " + (t1 - t0).toFixed(1) + " ms");
   
   return result;
 }
