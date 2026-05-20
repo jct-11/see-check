@@ -567,6 +567,7 @@ function resetSpatialState() {
   collectedFrames = [];
   isBatchProcessing = false;
   isUploading = false;
+  _stopping = false;
   
   // Clean up per-frame point cloud objects
   for (const entry of framePointsObjects) {
@@ -2174,6 +2175,7 @@ async function forceStopProcessing() {
   isFetchingFrames = false;
   isBatchProcessing = false;
   isInferenceStarted = false;
+  _stopping = false;
   disableCameraFollow();
   
   if (spatialCaptureTimer) {
