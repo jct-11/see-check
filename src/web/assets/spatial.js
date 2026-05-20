@@ -362,57 +362,52 @@ function updateCaptureProgress() {
  * 调用外部注入的captureCurrentFrame函数获取图像，存入待上传队列
  */
 async function collectFrame() {
-  // ✅ 流式模式下即使 isBatchProcessing=true 也要继续采集
-  // 只有批量模式才需要停止采集
   if (!spatialIsCapturing || (isBatchProcessing && !isInferenceStarted)) return;
 
-  // 调用外部设置的帧采集函数（async toBlob: encoding off main thread）
-  var frameData = null;
-  if (captureCurrentFrame) {
-    frameData = await captureCurrentFrame();
-  }
-  if (!frameData) {
-    console.log('[Spatial API] collectFrame: 无帧数据, captureCurrentFrame=' + (captureCurrentFrame ? 'defined' : 'null'));
+  // Fire-and-forget: kick off async capture, callback handles queue/upload
+  // setTimeout chain is NEVER blocked by await — critical for 20fps stability
+  if (!captureCurrentFrame) {
+    console.log('[Spatial API] collectFrame: captureCurrentFrame not set');
     return;
   }
 
-  console.log('[Spatial API] collectFrame: 收到帧, image.length=' + (frameData.image ? frameData.image.length : 0));
-
-  // 将帧数据加入队列
-  collectedFrames.push(frameData.image);
-  spatialFrameCounter++;
-  totalFramesCollected++;
-
-  updateCaptureProgress();
-
-  updateStatus({
-    frameCount: totalFramesCollected,
-    totalFrames: totalFramesCollected,
-    collectedFrames: totalFramesCollected,
-    targetFrames: spatialCaptureTargetFrames,
-    batchId: currentBatchId
-  });
-
-  // 每10帧上传一次（流式处理模式）
-  if (collectedFrames.length >= 10) {
-    while (collectedFrames.length > 0) { await uploadPendingFrames(); }
-    
-    // 流式处理：第一次上传后启动推理
-    if (!isInferenceStarted && !isBatchProcessing && currentBatchId) {
-      isInferenceStarted = true;
-      addLog('启动流式推理...', 'info');
-      await startStreamingInference(currentBatchId);  // ✅ 添加 await
+  captureCurrentFrame().then(async (frameData) => {
+    if (!frameData) {
+      console.log('[Spatial API] collectFrame: 无帧数据');
+      return;
     }
-  }
 
-  // 达到目标帧数后自动停止
-  if (totalFramesCollected >= spatialCaptureTargetFrames) {
-    console.log('[Spatial API] 达到目标帧数 ' + spatialCaptureTargetFrames + '，自动停止采集');
-    while (collectedFrames.length > 0) { await uploadPendingFrames(); }
-    await stopSpatialCapture();
-  }
+    console.log('[Spatial API] collectFrame: 收到帧, image.length=' + (frameData.image ? frameData.image.length : 0));
 
-  // Legacy submitBatch removed — streaming inference handles processing
+    collectedFrames.push(frameData.image);
+    spatialFrameCounter++;
+    totalFramesCollected++;
+
+    updateCaptureProgress();
+    updateStatus({
+      frameCount: totalFramesCollected,
+      totalFrames: totalFramesCollected,
+      collectedFrames: totalFramesCollected,
+      targetFrames: spatialCaptureTargetFrames,
+      batchId: currentBatchId
+    });
+
+    if (collectedFrames.length >= 10) {
+      while (collectedFrames.length > 0) { await uploadPendingFrames(); }
+
+      if (!isInferenceStarted && !isBatchProcessing && currentBatchId) {
+        isInferenceStarted = true;
+        addLog('启动流式推理...', 'info');
+        await startStreamingInference(currentBatchId);
+      }
+    }
+
+    if (totalFramesCollected >= spatialCaptureTargetFrames) {
+      console.log('[Spatial API] 达到目标帧数 ' + spatialCaptureTargetFrames + '，自动停止采集');
+      while (collectedFrames.length > 0) { await uploadPendingFrames(); }
+      await stopSpatialCapture();
+    }
+  });
 }
 
 /**
