@@ -379,9 +379,9 @@ async function collectFrame() {
       return;
     }
 
-    console.log('[Spatial API] collectFrame: 收到帧, image.length=' + (frameData.image ? frameData.image.length : 0));
+    console.log('[Spatial API] collectFrame: 收到帧, blob.size=' + (frameData.blob ? frameData.blob.size : 0));
 
-    collectedFrames.push(frameData.image);
+    collectedFrames.push(frameData.blob);
     spatialFrameCounter++;
     totalFramesCollected++;
 
@@ -429,9 +429,13 @@ async function collectFrame() {
  * @returns {Promise<void>}
  */
 async function uploadPendingFrames() {
-  if (isUploading || collectedFrames.length === 0 || !currentBatchId) return;
-  
-  // 每次最多上传50帧
+  if (collectedFrames.length === 0 || !currentBatchId) return;
+
+  // Wait for previous upload to finish (prevents infinite while-loop spin)
+  while (isUploading) {
+    await new Promise(r => setTimeout(r, 50));
+  }
+
   const framesToUpload = collectedFrames.splice(0, 50);
   isUploading = true;
   try {
@@ -654,11 +658,9 @@ async function checkBatchServerStatus() {
 async function uploadFramesToBatchServer(batchId, frames) {
   if (frames.length === 0) return { success: false };
   
-  isUploading = true;
   const formData = new FormData();
   
-  frames.forEach((frame, index) => {
-    const blob = base64ToBlob(frame, 'image/jpeg');
+  frames.forEach((blob, index) => {
     const frameNum = spatialFrameCounter - frames.length + index;
     formData.append('files', blob, `frame_${String(frameNum).padStart(3, '0')}.jpg`);
   });
@@ -2056,10 +2058,8 @@ async function captureCurrentFrameData() {
     );
     const tBlob1 = performance.now();
     slot.busy = false;
-    const base64 = await _blobToBase64(blob);
-    const tB64 = performance.now();
-    console.log("[DEBUG-cap] frame " + totalFramesCollected + " slot=" + (_poolIdx - 1) % CANVAS_POOL_SIZE + " draw=" + (tDraw - tCap0).toFixed(1) + "ms toBlob=" + (tBlob1 - tBlob0).toFixed(1) + "ms blobToBase64=" + (tB64 - tBlob1).toFixed(1) + "ms");
-    return { image: base64 };
+    console.log("[DEBUG-cap] frame " + totalFramesCollected + " slot=" + (_poolIdx - 1) % CANVAS_POOL_SIZE + " toBlob=" + (tBlob1 - tBlob0).toFixed(1) + "ms");
+    return { blob: blob };
   } catch (e) {
     slot.busy = false;
     console.error("[Spatial] captureCurrentFrameData: capture failed:", e.message);
