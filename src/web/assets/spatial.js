@@ -2139,18 +2139,7 @@ async function stopSpatialCapture() {
 
     // Tell backend that upload is complete (await to ensure delivery)
     if (currentBatchId) {
-      // Wait for point cloud fetch to complete before sending finish signal
-      // Otherwise backend stops processing early and last frames are lost
-      if (isFetchingFrames) {
-        console.log("[DEBUG-complete] waiting for fetchNextFrame to finish...");
-        let waitMs = 0;
-        const maxWait = 600000; // 10min timeout
-        while (isFetchingFrames && waitMs < maxWait) {
-          await new Promise(r => setTimeout(r, 500));
-          waitMs += 500;
-        }
-        console.log("[DEBUG-complete] fetchNextFrame done after " + waitMs + "ms, isFetchingFrames=" + isFetchingFrames);
-      }
+      // Send finish signal FIRST — lets backend complete processing so fetchNextFrame can exit
       console.log("[DEBUG-complete] calling sendFinishInference...");
       for (let retry = 0; retry < 3; retry++) {
         try {
@@ -2161,6 +2150,18 @@ async function stopSpatialCapture() {
           console.warn("sendFinishInference attempt " + (retry + 1) + " failed:", e.message);
           if (retry < 2) await new Promise(r => setTimeout(r, 1000));
         }
+      }
+
+      // Now wait for fetchNextFrame to finish pulling remaining point clouds
+      if (isFetchingFrames) {
+        console.log("[DEBUG-complete] waiting for fetchNextFrame to finish...");
+        let waitMs = 0;
+        const maxWait = 600000; // 10min timeout
+        while (isFetchingFrames && waitMs < maxWait) {
+          await new Promise(r => setTimeout(r, 500));
+          waitMs += 500;
+        }
+        console.log("[DEBUG-complete] fetchNextFrame done after " + waitMs + "ms, isFetchingFrames=" + isFetchingFrames);
       }
     }
     
@@ -2221,18 +2222,7 @@ async function forceStopProcessing() {
 
     // Tell backend that upload is complete (await to ensure delivery)
     if (currentBatchId) {
-      // Wait for point cloud fetch to complete before sending finish signal
-      // Otherwise backend stops processing early and last frames are lost
-      if (isFetchingFrames) {
-        console.log("[DEBUG-complete] waiting for fetchNextFrame to finish...");
-        let waitMs = 0;
-        const maxWait = 600000; // 10min timeout
-        while (isFetchingFrames && waitMs < maxWait) {
-          await new Promise(r => setTimeout(r, 500));
-          waitMs += 500;
-        }
-        console.log("[DEBUG-complete] fetchNextFrame done after " + waitMs + "ms, isFetchingFrames=" + isFetchingFrames);
-      }
+      // Send finish signal FIRST — lets backend complete processing so fetchNextFrame can exit
       console.log("[DEBUG-complete] calling sendFinishInference...");
       for (let retry = 0; retry < 3; retry++) {
         try {
@@ -2243,6 +2233,18 @@ async function forceStopProcessing() {
           console.warn("sendFinishInference attempt " + (retry + 1) + " failed:", e.message);
           if (retry < 2) await new Promise(r => setTimeout(r, 1000));
         }
+      }
+
+      // Now wait for fetchNextFrame to finish pulling remaining point clouds
+      if (isFetchingFrames) {
+        console.log("[DEBUG-complete] waiting for fetchNextFrame to finish...");
+        let waitMs = 0;
+        const maxWait = 600000; // 10min timeout
+        while (isFetchingFrames && waitMs < maxWait) {
+          await new Promise(r => setTimeout(r, 500));
+          waitMs += 500;
+        }
+        console.log("[DEBUG-complete] fetchNextFrame done after " + waitMs + "ms, isFetchingFrames=" + isFetchingFrames);
       }
     }
   currentBatchId = null;
