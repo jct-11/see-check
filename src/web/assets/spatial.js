@@ -564,7 +564,6 @@ function resetSpatialState() {
   currentBatchId = null;
   isInitialBatch = true;
   collectedFrames = [];
-  uploadQueue = [];
   isBatchProcessing = false;
   isUploading = false;
   
@@ -1353,11 +1352,10 @@ function toggleCameraFrustums() {
 
 function getCurrentSceneData() {
   const data = { points: [], colors: [], cameraPoses: [] };
-  for (const frameIndex in framePointCloudObjects) {
-    const obj = framePointCloudObjects[frameIndex];
-    if (obj && obj.geometry) {
-      const pos = obj.geometry.attributes.position.array;
-      const col = obj.geometry.attributes.color;
+  for (const entry of framePointsObjects) {
+    if (entry.points && entry.points.geometry) {
+      const pos = entry.points.geometry.attributes.position.array;
+      const col = entry.points.geometry.attributes.color;
       data.points.push(...Array.from(pos));
       if (col) data.colors.push(...Array.from(col.array));
     }
@@ -1717,7 +1715,7 @@ async function fetchNextFrame() {
         console.warn('Camera follow update failed:', e.message);
       }
       
-      var totalRenderedFrames = Object.keys(framePointClouds).length;
+      var totalRenderedFrames = framePointsObjects.length;
       addLog('帧 ' + currentFetchFrame + (totalFramesAvailable ? '/' + totalFramesAvailable : '') + ' 点云加载完成，共 ' + numVertices + ' 点，累计 ' + totalRenderedFrames + ' 帧', 'ok');
       
       currentFetchFrame++;
@@ -1972,10 +1970,6 @@ async function switchToLocalCamera() {
     }
   }
 }
-
-// Shared canvas for capture — reused to prevent GPU memory fragmentation
-let _captureCanvas = null;
-let _captureCtx = null;
 
 // Shared canvas for capture — reused to prevent GPU memory fragmentation
 let _captureCanvas = null;
