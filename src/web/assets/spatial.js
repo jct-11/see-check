@@ -2055,8 +2055,8 @@ async function captureCurrentFrameData() {
     if (slot) slot.busy = false;
     const base64 = await _blobToBase64(blob);
     const tB64 = performance.now();
-    const tag = isTemp ? " TEMP" : " slot=" + (_poolIdx - 1) % CANVAS_POOL_SIZE;
-    console.log("[DEBUG-cap] frame " + totalFramesCollected + tag + " draw=" + (tDraw - tCap0).toFixed(1) + "ms toBlob=" + (tBlob1 - tBlob0).toFixed(1) + "ms blobToBase64=" + (tB64 - tBlob1).toFixed(1) + "ms");
+    
+    console.log("[DEBUG-cap] frame " + totalFramesCollected + " slot=" + (_poolIdx - 1) % CANVAS_POOL_SIZE + " draw=" + (tDraw - tCap0).toFixed(1) + "ms toBlob=" + (tBlob1 - tBlob0).toFixed(1) + "ms blobToBase64=" + (tB64 - tBlob1).toFixed(1) + "ms");
     return { image: base64 };
   } catch (e) {
     if (slot) slot.busy = false;
