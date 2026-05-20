@@ -2022,18 +2022,9 @@ async function captureCurrentFrameData() {
     _poolIdx++;
     if (!s.busy) { slot = s; break; }
   }
-  // Pool full fallback: create temp canvas for this frame (degraded, but no frame loss)
-  const isTemp = !slot;
-  let canvas, ctx;
-  if (isTemp) {
-    console.log("[DEBUG-cap] frame " + totalFramesCollected + " POOL-FULL fallback (temp canvas)");
-    canvas = document.createElement("canvas");
-    canvas.width = SPATIAL_FRAME_WIDTH;
-    canvas.height = SPATIAL_FRAME_HEIGHT;
-    ctx = canvas.getContext("2d");
-  } else {
-    canvas = slot.canvas;
-    ctx = slot.ctx;
+  // Pool full: skip frame (natural backpressure, protects GPU memory)
+  if (!slot) {
+    return null;
   }
 
   const tCap0 = performance.now();
@@ -2045,23 +2036,21 @@ async function captureCurrentFrameData() {
   }
 
   try {
-    ctx.drawImage(video, 0, 0, SPATIAL_FRAME_WIDTH, SPATIAL_FRAME_HEIGHT);
+    slot.ctx.drawImage(video, 0, 0, SPATIAL_FRAME_WIDTH, SPATIAL_FRAME_HEIGHT);
     const tDraw = performance.now();
-    if (slot) slot.busy = true;
-    // toBlob encodes JPEG asynchronously — pool slots encode in parallel
+    slot.busy = true;
     const tBlob0 = performance.now();
     const blob = await new Promise((resolve, reject) =>
-      canvas.toBlob(resolve, "image/jpeg", 0.5)
+      slot.canvas.toBlob(resolve, "image/jpeg", 0.5)
     );
     const tBlob1 = performance.now();
-    if (slot) slot.busy = false;
+    slot.busy = false;
     const base64 = await _blobToBase64(blob);
     const tB64 = performance.now();
-    
     console.log("[DEBUG-cap] frame " + totalFramesCollected + " slot=" + (_poolIdx - 1) % CANVAS_POOL_SIZE + " draw=" + (tDraw - tCap0).toFixed(1) + "ms toBlob=" + (tBlob1 - tBlob0).toFixed(1) + "ms blobToBase64=" + (tB64 - tBlob1).toFixed(1) + "ms");
     return { image: base64 };
   } catch (e) {
-    if (slot) slot.busy = false;
+    slot.busy = false;
     console.error("[Spatial] captureCurrentFrameData: capture failed:", e.message);
     return null;
   }
