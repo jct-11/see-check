@@ -412,10 +412,7 @@ async function collectFrame() {
     stopSpatialCapture();
   }
 
-  // 达到目标帧数后提交处理（兼容批量模式）
-  if (totalFramesCollected >= spatialCaptureTargetFrames && !isBatchProcessing) {
-    submitBatch();
-  }
+  // Legacy submitBatch removed — streaming inference handles processing
 }
 
 /**
@@ -528,11 +525,7 @@ function setSpatialCapturing(value) {
       spatialCaptureTimer = null;
     }
     
-    // ✅ 停止采集时上传剩余帧并结束推理
-    if (currentBatchId) {
-      uploadPendingFrames();
-      sendFinishInference(currentBatchId);
-    }
+    // stopSpatialCapture handles upload + finish with proper await/retry
   }
 }
 
@@ -1253,6 +1246,7 @@ function enableCameraFollow() {
 }
 
 function disableCameraFollow() {
+  console.log("[DEBUG-complete] disableCameraFollow START, accumCount=" + accumCount + ", sceneObjs=" + (scene ? scene.children.length : 0));
   // Capture camera orientation before clearing follow state
   if (camera3d) {
     flightQuat.copy(camera3d.quaternion);
@@ -1266,6 +1260,7 @@ function disableCameraFollow() {
   const labelEl = document.getElementById("frameImageLabel");
   if (imgEl) imgEl.style.display = "none";
   if (labelEl) labelEl.style.display = "none";
+  console.log("[DEBUG-complete] disableCameraFollow END");
 }
 
 function updateCameraFollow(frameIndex) {
@@ -1584,7 +1579,7 @@ async function fetchNextFrame() {
 
   if (!isFetchingFrames) {
     isFetchingFrames = false;
-    var totalFrames = Object.keys(framePointCloudObjects).length;
+    var totalFrames = framePointsObjects.length;
     addLog('所有帧点云拉取完成，共 ' + totalFrames + ' 帧', 'ok');
     
     disableCameraFollow();
@@ -1594,8 +1589,9 @@ async function fetchNextFrame() {
   
   // ✅ 批量模式：检查是否达到总帧数
   if (totalFramesAvailable && currentFetchFrame >= totalFramesAvailable) {
+    console.log("[DEBUG-complete] fetchNextFrame: all frames fetched, sceneObjs=" + (scene ? scene.children.length : 0) + ", framePointsObjects=" + framePointsObjects.length);
     isFetchingFrames = false;
-    var totalFrames = Object.keys(framePointCloudObjects).length;
+    var totalFrames = framePointsObjects.length;
     addLog('所有帧点云拉取完成，共 ' + totalFrames + ' 帧', 'ok');
     disableCameraFollow();
     return;
@@ -1631,7 +1627,7 @@ async function fetchNextFrame() {
   if (!hasNewFrame && !totalFramesAvailable) {
     if (currentStatus === 'completed' && currentFetchFrame >= currentProcessedFrames) {
       isFetchingFrames = false;
-      var totalFrames = Object.keys(framePointCloudObjects).length;
+      var totalFrames = framePointsObjects.length;
       addLog('所有帧点云拉取完成，共 ' + totalFrames + ' 帧', 'ok');
       disableCameraFollow();
       return;
@@ -2060,8 +2056,10 @@ function startSpatialCapture() {
  * 通知API停止采集，更新按钮状态
  */
 async function stopSpatialCapture() {
+  console.log("[DEBUG-complete] stopSpatialCapture START");
   if (typeof SpatialApi !== 'undefined') {
     SpatialApi.setCapturing(false);
+    console.log("[DEBUG-complete] setCapturing(false) done");
 
     const startBtn = document.getElementById('spatialStartCaptureBtn');
     const stopBtn = document.getElementById('spatialStopCaptureBtn');
@@ -2075,9 +2073,11 @@ async function stopSpatialCapture() {
 
     // Tell backend that upload is complete (await to ensure delivery)
     if (currentBatchId) {
+      console.log("[DEBUG-complete] calling sendFinishInference...");
       for (let retry = 0; retry < 3; retry++) {
         try {
           await sendFinishInference(currentBatchId);
+          console.log("[DEBUG-complete] sendFinishInference OK");
           break;
         } catch (e) {
           console.warn("sendFinishInference attempt " + (retry + 1) + " failed:", e.message);
@@ -2088,6 +2088,7 @@ async function stopSpatialCapture() {
     
     addLog('空间记忆采集已停止', 'info');
   }
+  console.log("[DEBUG-complete] stopSpatialCapture END");
 }
 
 async function forceStopProcessing() {
@@ -2141,9 +2142,11 @@ async function forceStopProcessing() {
 
     // Tell backend that upload is complete (await to ensure delivery)
     if (currentBatchId) {
+      console.log("[DEBUG-complete] calling sendFinishInference...");
       for (let retry = 0; retry < 3; retry++) {
         try {
           await sendFinishInference(currentBatchId);
+          console.log("[DEBUG-complete] sendFinishInference OK");
           break;
         } catch (e) {
           console.warn("sendFinishInference attempt " + (retry + 1) + " failed:", e.message);
