@@ -406,9 +406,17 @@ async function collectFrame() {
 
     if (totalFramesCollected >= spatialCaptureTargetFrames && !_stopping) {
       _stopping = true;
-      console.log('[Spatial API] 达到目标帧数 ' + spatialCaptureTargetFrames + '，自动停止采集');
-      while (collectedFrames.length > 0) { await uploadPendingFrames(); }
-      stopSpatialCapture();  // fire-and-forget: don't block .then() callback
+      var _tComp0 = performance.now();
+      console.log('[TIMING] completion START, collectedFrames=' + collectedFrames.length);
+      while (collectedFrames.length > 0) {
+        var _tUp0 = performance.now();
+        await uploadPendingFrames();
+        console.log('[TIMING] upload batch took ' + (performance.now() - _tUp0).toFixed(0) + 'ms, remaining=' + collectedFrames.length);
+      }
+      var _tUpDone = performance.now();
+      console.log('[TIMING] all uploads done in ' + (_tUpDone - _tComp0).toFixed(0) + 'ms');
+      stopSpatialCapture();  // fire-and-forget
+      console.log('[TIMING] stopSpatialCapture called, elapsed=' + (performance.now() - _tComp0).toFixed(0) + 'ms');
     }
   }).catch(err => {
     console.error('[Spatial API] collectFrame callback error:', err);
@@ -2109,10 +2117,11 @@ function startSpatialCapture() {
  * 通知API停止采集，更新按钮状态
  */
 async function stopSpatialCapture() {
-  console.log("[DEBUG-complete] stopSpatialCapture START");
+  var _tStop0 = performance.now();
+  console.log("[DEBUG-complete] stopSpatialCapture START, isFetchingFrames=" + isFetchingFrames);
   if (typeof SpatialApi !== 'undefined') {
     SpatialApi.setCapturing(false);
-    console.log("[DEBUG-complete] setCapturing(false) done");
+    console.log("[DEBUG-complete] setCapturing(false) done, t=" + (performance.now() - _tStop0).toFixed(0) + "ms");
 
     const startBtn = document.getElementById('spatialStartCaptureBtn');
     const stopBtn = document.getElementById('spatialStopCaptureBtn');
@@ -2123,6 +2132,7 @@ async function stopSpatialCapture() {
     updateStepStatus('stepProcessing', 'pending');
     updateStepStatus('step3D', 'pending');
     hideCaptureProgress();
+    console.log("[DEBUG-complete] DOM updates done, t=" + (performance.now() - _tStop0).toFixed(0) + "ms");
 
     // Tell backend that upload is complete (await to ensure delivery)
     if (currentBatchId) {
