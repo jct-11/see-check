@@ -1049,7 +1049,7 @@ function addFramePointCloudToScene(frameIndex) {
   const numPoints = positions.length / 3;
   if (numPoints === 0) return;
 
-  // Filter: isfinite + confidence + downsample
+  // Filter: confidence + downsample (step by stride, skip isFinite for speed)
   const stride = Math.max(1, guiDownsample);
   const confThreshold = guiConfThreshold;
   const maxSize = Math.ceil(numPoints / stride);
@@ -1057,21 +1057,25 @@ function addFramePointCloudToScene(frameIndex) {
   const filteredCol = new Float32Array(maxSize * 3);
   let count = 0;
 
-  for (let i = 0; i < numPoints; i++) {
-    const x = positions[i * 3];
-    const y = positions[i * 3 + 1];
-    const z = positions[i * 3 + 2];
-    if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
+  for (let i = 0; i < numPoints; i += stride) {
+    const idx3 = i * 3;
+    const x = positions[idx3];
+    const y = positions[idx3 + 1];
+    const z = positions[idx3 + 2];
+    // NaN/Infinity check — fast path using value comparison
+    if (x !== x || (x > 1e10 || x < -1e10)) continue;
+    if (y !== y || (y > 1e10 || y < -1e10)) continue;
+    if (z !== z || (z > 1e10 || z < -1e10)) continue;
     if (confs[i] <= confThreshold) continue;
-    if (i % stride !== 0) continue;
 
     // Raw world coordinates — no transform (matching viser)
-    filteredPos[count * 3] = x;
-    filteredPos[count * 3 + 1] = y;
-    filteredPos[count * 3 + 2] = z;
-    filteredCol[count * 3] = colors[i * 3];
-    filteredCol[count * 3 + 1] = colors[i * 3 + 1];
-    filteredCol[count * 3 + 2] = colors[i * 3 + 2];
+    const o = count * 3;
+    filteredPos[o] = x;
+    filteredPos[o + 1] = y;
+    filteredPos[o + 2] = z;
+    filteredCol[o] = colors[idx3];
+    filteredCol[o + 1] = colors[idx3 + 1];
+    filteredCol[o + 2] = colors[idx3 + 2];
     count++;
   }
 
