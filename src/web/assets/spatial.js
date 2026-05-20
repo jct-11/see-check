@@ -893,6 +893,11 @@ async function init3DScene() {
   // Start animation loop
   animate();
 
+  // Heartbeat monitor — logs every 5s to detect if event loop is alive
+  setInterval(function() {
+    console.log("[DEBUG-heartbeat] event loop alive, sceneObjs=" + (scene ? scene.children.length : 0) + ", accumCount=" + accumCount + ", fps=" + visualizerStats.fps + ", renderTime=" + lastRenderTime);
+  }, 5000);
+
   console.log('[Spatial] 3D scene initialized (viser-compatible, no coord transform)');
 }
 
@@ -1975,6 +1980,7 @@ async function switchToLocalCamera() {
 }
 
 function captureCurrentFrameData() {
+  const tCap0 = performance.now();
   var canvas = document.createElement("canvas");
 
   var video = document.getElementById("spatialCameraVideo");
@@ -1989,9 +1995,12 @@ function captureCurrentFrameData() {
 
   try {
     ctx.drawImage(video, 0, 0, SPATIAL_FRAME_WIDTH, SPATIAL_FRAME_HEIGHT);
+    const tDraw = performance.now();
     var dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    const tEncode = performance.now();
     var base64 = dataUrl.split(",")[1];
-    console.log("[Spatial] captureCurrentFrameData: 本地摄像头采集成功, 尺寸=" + SPATIAL_FRAME_WIDTH + "x" + SPATIAL_FRAME_HEIGHT + " 数据长度=" + base64.length);
+    const tTotal = performance.now();
+    console.log("[DEBUG-cap] captured frame " + totalFramesCollected + " draw=" + (tDraw - tCap0).toFixed(1) + "ms encode=" + (tEncode - tDraw).toFixed(1) + "ms total=" + (tTotal - tCap0).toFixed(1) + "ms");
     return { image: base64 };
   } catch (e) {
     console.error("[Spatial] captureCurrentFrameData: 本地摄像头 drawImage 失败:", e.message);
