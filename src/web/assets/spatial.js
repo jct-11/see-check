@@ -995,8 +995,9 @@ function animate() {
   animationId = requestAnimationFrame(animate);
 
   const now = performance.now();
-  // Throttle to 30fps in free-flight mode, full rate in follow mode
-  if (!cameraFollowEnabled && now - lastRenderTime < 33) return;
+  // Throttle: 30fps free-flight, 15fps follow (data loading)
+  const maxFps = cameraFollowEnabled ? 15 : 30;
+  if (now - lastRenderTime < (1000 / maxFps)) return;
 
   // Update flight camera orientation from yaw/pitch (unless in follow mode)
   if (!cameraFollowEnabled && camera3d) {
