@@ -366,10 +366,10 @@ async function collectFrame() {
   // 只有批量模式才需要停止采集
   if (!spatialIsCapturing || (isBatchProcessing && !isInferenceStarted)) return;
 
-  // 调用外部设置的帧采集函数
+  // 调用外部设置的帧采集函数（async toBlob: encoding off main thread）
   var frameData = null;
   if (captureCurrentFrame) {
-    frameData = captureCurrentFrame();
+    frameData = await captureCurrentFrame();
   }
   if (!frameData) {
     console.log('[Spatial API] collectFrame: 无帧数据, captureCurrentFrame=' + (captureCurrentFrame ? 'defined' : 'null'));
@@ -1977,7 +1977,28 @@ async function switchToLocalCamera() {
 let _captureCanvas = null;
 let _captureCtx = null;
 
-function captureCurrentFrameData() {
+// Shared canvas for capture — reused to prevent GPU memory fragmentation
+let _captureCanvas = null;
+let _captureCtx = null;
+let _captureBusy = false;  // prevents drawImage overwrite during async toBlob
+
+// Helper: convert Blob to base64 (async via FileReader, off main thread)
+function _blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(",")[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function captureCurrentFrameData() {
+  // Skip if previous async encoding still in progress (canvas content not yet consumed)
+  if (_captureBusy) {
+    console.warn("[DEBUG-cap] frame " + totalFramesCollected + " SKIPPED (previous encode in progress)");
+    return null;
+  }
+
   const tCap0 = performance.now();
 
   var video = document.getElementById("spatialCameraVideo");
@@ -1986,8 +2007,6 @@ function captureCurrentFrameData() {
     return null;
   }
 
-  // Reuse canvas — creating a new one per frame causes GPU memory fragmentation
-  // and progressive slowdown of toDataURL (8ms -> 86ms observed)
   if (!_captureCanvas) {
     _captureCanvas = document.createElement("canvas");
     _captureCanvas.width = SPATIAL_FRAME_WIDTH;
@@ -1998,14 +2017,19 @@ function captureCurrentFrameData() {
   try {
     _captureCtx.drawImage(video, 0, 0, SPATIAL_FRAME_WIDTH, SPATIAL_FRAME_HEIGHT);
     const tDraw = performance.now();
-    var dataUrl = _captureCanvas.toDataURL("image/jpeg", 0.85);
-    const tEncode = performance.now();
-    var base64 = dataUrl.split(",")[1];
-    const tTotal = performance.now();
-    console.log("[DEBUG-cap] captured frame " + totalFramesCollected + " draw=" + (tDraw - tCap0).toFixed(1) + "ms encode=" + (tEncode - tDraw).toFixed(1) + "ms total=" + (tTotal - tCap0).toFixed(1) + "ms");
+    _captureBusy = true;
+    // toBlob encodes JPEG asynchronously (off main thread) — critical for CPU stability
+    const blob = await new Promise((resolve, reject) =>
+      _captureCanvas.toBlob(resolve, "image/jpeg", 0.6)
+    );
+    _captureBusy = false;
+    const base64 = await _blobToBase64(blob);
+    const tEnd = performance.now();
+    console.log("[DEBUG-cap] frame " + totalFramesCollected + " draw=" + (tDraw - tCap0).toFixed(1) + "ms async-encode=" + (tEnd - tDraw).toFixed(1) + "ms");
     return { image: base64 };
   } catch (e) {
-    console.error("[Spatial] captureCurrentFrameData: 本地摄像头 drawImage 失败:", e.message);
+    _captureBusy = false;
+    console.error("[Spatial] captureCurrentFrameData: capture failed:", e.message);
     return null;
   }
 }
