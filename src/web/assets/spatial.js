@@ -361,6 +361,8 @@ function updateCaptureProgress() {
  * 采集当前帧数据
  * 调用外部注入的captureCurrentFrame函数获取图像，存入待上传队列
  */
+let _stopping = false;  // prevent duplicate stopSpatialCapture calls
+
 async function collectFrame() {
   if (!spatialIsCapturing || (isBatchProcessing && !isInferenceStarted)) return;
 
@@ -402,7 +404,8 @@ async function collectFrame() {
       }
     }
 
-    if (totalFramesCollected >= spatialCaptureTargetFrames) {
+    if (totalFramesCollected >= spatialCaptureTargetFrames && !_stopping) {
+      _stopping = true;
       console.log('[Spatial API] 达到目标帧数 ' + spatialCaptureTargetFrames + '，自动停止采集');
       while (collectedFrames.length > 0) { await uploadPendingFrames(); }
       await stopSpatialCapture();
