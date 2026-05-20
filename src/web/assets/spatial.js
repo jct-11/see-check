@@ -410,6 +410,8 @@ async function collectFrame() {
       while (collectedFrames.length > 0) { await uploadPendingFrames(); }
       stopSpatialCapture();  // fire-and-forget: don't block .then() callback
     }
+  }).catch(err => {
+    console.error('[Spatial API] collectFrame callback error:', err);
   });
 }
 
