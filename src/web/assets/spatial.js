@@ -1986,7 +1986,29 @@ function _blobToBase64(blob) {
   });
 }
 
+// Capture sample rate — only encode every Nth frame (1=all, 3=every 3rd)
+// Used to diagnose whether toBlob slowdown is from encoder queue pressure
+let _captureSampleN = 3;
+let _captureSampleCounter = 0;
+
 async function captureCurrentFrameData() {
+  // Sample rate throttle: skip frames to reduce encoder pressure (diagnostic mode)
+  _captureSampleCounter++;
+  if (_captureSampleN > 1 && _captureSampleCounter % _captureSampleN !== 0) {
+    var video = document.getElementById("spatialCameraVideo");
+    if (!video || !video.videoWidth) return null;
+    if (!_captureCanvas) {
+      _captureCanvas = document.createElement("canvas");
+      _captureCanvas.width = SPATIAL_FRAME_WIDTH;
+      _captureCanvas.height = SPATIAL_FRAME_HEIGHT;
+      _captureCtx = _captureCanvas.getContext("2d");
+    }
+    // Still call drawImage to keep video frame consumption going (prevents buffer buildup)
+    _captureCtx.drawImage(video, 0, 0, SPATIAL_FRAME_WIDTH, SPATIAL_FRAME_HEIGHT);
+    console.log("[DEBUG-cap] frame " + totalFramesCollected + " SKIP (sample rate 1/" + _captureSampleN + ")");
+    return null;
+  }
+
   // Skip if previous async encoding still in progress (canvas content not yet consumed)
   if (_captureBusy) {
     console.warn("[DEBUG-cap] frame " + totalFramesCollected + " SKIPPED (previous encode in progress)");
@@ -2021,7 +2043,7 @@ async function captureCurrentFrameData() {
     _captureBusy = false;
     const base64 = await _blobToBase64(blob);
     const tB64 = performance.now();
-    console.log("[DEBUG-cap] frame " + totalFramesCollected + " draw=" + (tDraw - tCap0).toFixed(1) + "ms toBlob=" + (tBlob1 - tBlob0).toFixed(1) + "ms blobToBase64=" + (tB64 - tBlob1).toFixed(1) + "ms");
+    console.log("[DEBUG-cap] frame " + totalFramesCollected + " ENCODE toBlob=" + (tBlob1 - tBlob0).toFixed(1) + "ms blobToBase64=" + (tB64 - tBlob1).toFixed(1) + "ms");
     return { image: base64 };
   } catch (e) {
     _captureBusy = false;
