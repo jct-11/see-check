@@ -2012,14 +2012,16 @@ async function captureCurrentFrameData() {
     _captureCtx.drawImage(video, 0, 0, SPATIAL_FRAME_WIDTH, SPATIAL_FRAME_HEIGHT);
     const tDraw = performance.now();
     _captureBusy = true;
-    // toBlob encodes JPEG asynchronously (off main thread) — critical for CPU stability
+    // toBlob encodes JPEG asynchronously (off main thread)
+    const tBlob0 = performance.now();
     const blob = await new Promise((resolve, reject) =>
       _captureCanvas.toBlob(resolve, "image/jpeg", 0.5)
     );
+    const tBlob1 = performance.now();
     _captureBusy = false;
     const base64 = await _blobToBase64(blob);
-    const tEnd = performance.now();
-    console.log("[DEBUG-cap] frame " + totalFramesCollected + " draw=" + (tDraw - tCap0).toFixed(1) + "ms async-encode=" + (tEnd - tDraw).toFixed(1) + "ms");
+    const tB64 = performance.now();
+    console.log("[DEBUG-cap] frame " + totalFramesCollected + " draw=" + (tDraw - tCap0).toFixed(1) + "ms toBlob=" + (tBlob1 - tBlob0).toFixed(1) + "ms blobToBase64=" + (tB64 - tBlob1).toFixed(1) + "ms");
     return { image: base64 };
   } catch (e) {
     _captureBusy = false;
