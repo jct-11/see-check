@@ -1057,6 +1057,7 @@ function addFramePointCloudToScene(frameIndex) {
   const filteredCol = new Float32Array(maxSize * 3);
   let count = 0;
 
+  window.__tFilterStart = performance.now();
   for (let i = 0; i < numPoints; i += stride) {
     const idx3 = i * 3;
     const x = positions[idx3];
@@ -1081,9 +1082,9 @@ function addFramePointCloudToScene(frameIndex) {
 
   if (count === 0) return;
 
-  const tFilter = performance.now();
-  console.log("[DEBUG-pt] frame " + frameIndex + " filtered " + count + " pts from " + numPoints + " raw in " + (tFilter - (window.__tAddFrame0 || tFilter)).toFixed(1) + " ms");
-  window.__tAddFrame0 = tFilter;
+  const tFilterEnd = performance.now();
+  console.log("[DEBUG-pt] frame " + frameIndex + " filtered " + count + " pts from " + numPoints + " raw, loop took " + (tFilterEnd - window.__tFilterStart).toFixed(1) + " ms");
+
 
   // Ensure accumulation buffer has enough capacity
   const needed = (accumCount + count) * 3;
@@ -1746,6 +1747,9 @@ async function fetchNextFrame() {
       
       addFramePointCloudToScene(currentFetchFrame);
       framePointClouds[currentFetchFrame] = null; // free raw data after accumulation
+      if (typeof performance.memory !== "undefined") {
+        console.log("[DEBUG-mem] usedJSHeapSize=" + (performance.memory.usedJSHeapSize / 1048576).toFixed(1) + " MB, totalJSHeapSize=" + (performance.memory.totalJSHeapSize / 1048576).toFixed(1) + " MB");
+      }
       
       try {
         updateTrajectoryAndFrustums();
