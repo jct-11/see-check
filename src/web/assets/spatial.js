@@ -1025,7 +1025,12 @@ function animate() {
       frameCount = 0;
       frameTime = now;
     }
+    const tRender0 = performance.now();
     renderer.render(scene, camera3d);
+    const tRender1 = performance.now();
+    if (frameCount % 15 === 0) {
+      console.log("[DEBUG-render] frame " + frameCount + " render in " + (tRender1 - tRender0).toFixed(1) + " ms, accumCount=" + accumCount);
+    }
     lastRenderTime = now;
   }
 }
@@ -1072,6 +1077,10 @@ function addFramePointCloudToScene(frameIndex) {
 
   if (count === 0) return;
 
+  const tFilter = performance.now();
+  console.log("[DEBUG-pt] frame " + frameIndex + " filtered " + count + " pts from " + numPoints + " raw in " + (tFilter - (window.__tAddFrame0 || tFilter)).toFixed(1) + " ms");
+  window.__tAddFrame0 = tFilter;
+
   // Ensure accumulation buffer has enough capacity
   const needed = (accumCount + count) * 3;
   if (needed > accumPos.length) {
@@ -1107,6 +1116,8 @@ function addFramePointCloudToScene(frameIndex) {
 function updateMergedPointCloud() {
   if (!THREE || !scene || accumCount === 0) return;
 
+  const tGeom0 = performance.now();
+
   // Create geometry from pre-allocated buffers (zero-copy view)
   const posAttr = new THREE.BufferAttribute(
     new Float32Array(accumPos.buffer, 0, accumCount * 3), 3);
@@ -1134,6 +1145,9 @@ function updateMergedPointCloud() {
     mergedPoints = new THREE.Points(geom, mat);
     scene.add(mergedPoints);
   }
+
+  const tGeom1 = performance.now();
+  console.log("[DEBUG-geom] updateMergedPointCloud: " + accumCount + " pts, geom swap in " + (tGeom1 - tGeom0).toFixed(1) + " ms");
 }
 
 
