@@ -1027,7 +1027,7 @@ function animate() {
     renderer.render(scene, camera3d);
     const tRender1 = performance.now();
     if (frameCount % 15 === 0) {
-      console.log("[DEBUG-render] frame " + frameCount + " render in " + (tRender1 - tRender0).toFixed(1) + " ms, accumCount=" + accumCount);
+      console.log("[DEBUG-render] frame " + frameCount + " render in " + (tRender1 - tRender0).toFixed(1) + " ms, accumCount=" + accumCount + ", sceneObjs=" + scene.children.length);
     }
     lastRenderTime = now;
   }
@@ -1121,6 +1121,7 @@ function updateTrajectoryLine() {
   if (!trajectoryDirty) return;
 
   try {
+    const tTraj0 = performance.now();
     if (trajectoryLine) {
       scene.remove(trajectoryLine);
       if (trajectoryLine.geometry) trajectoryLine.geometry.dispose();
@@ -1152,6 +1153,8 @@ function updateTrajectoryLine() {
     trajectoryLine = new THREE.Line(geom, mat);
     scene.add(trajectoryLine);
     trajectoryDirty = false;
+    const tTraj1 = performance.now();
+    console.log("[DEBUG-traj] rebuilt with " + pts.length + " cameras, " + curvePts.length + " curve pts in " + (tTraj1 - tTraj0).toFixed(1) + " ms, scene.children=" + scene.children.length);
   } catch (e) {
     console.warn('[Spatial] updateTrajectoryLine failed:', e.message);
   }
