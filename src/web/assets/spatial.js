@@ -1973,9 +1973,12 @@ async function switchToLocalCamera() {
   }
 }
 
+// Shared canvas for capture — reused to prevent GPU memory fragmentation
+let _captureCanvas = null;
+let _captureCtx = null;
+
 function captureCurrentFrameData() {
   const tCap0 = performance.now();
-  var canvas = document.createElement("canvas");
 
   var video = document.getElementById("spatialCameraVideo");
   if (!video || !video.videoWidth) {
@@ -1983,14 +1986,19 @@ function captureCurrentFrameData() {
     return null;
   }
 
-  canvas.width = SPATIAL_FRAME_WIDTH;
-  canvas.height = SPATIAL_FRAME_HEIGHT;
-  var ctx = canvas.getContext("2d");
+  // Reuse canvas — creating a new one per frame causes GPU memory fragmentation
+  // and progressive slowdown of toDataURL (8ms -> 86ms observed)
+  if (!_captureCanvas) {
+    _captureCanvas = document.createElement("canvas");
+    _captureCanvas.width = SPATIAL_FRAME_WIDTH;
+    _captureCanvas.height = SPATIAL_FRAME_HEIGHT;
+    _captureCtx = _captureCanvas.getContext("2d");
+  }
 
   try {
-    ctx.drawImage(video, 0, 0, SPATIAL_FRAME_WIDTH, SPATIAL_FRAME_HEIGHT);
+    _captureCtx.drawImage(video, 0, 0, SPATIAL_FRAME_WIDTH, SPATIAL_FRAME_HEIGHT);
     const tDraw = performance.now();
-    var dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    var dataUrl = _captureCanvas.toDataURL("image/jpeg", 0.85);
     const tEncode = performance.now();
     var base64 = dataUrl.split(",")[1];
     const tTotal = performance.now();
