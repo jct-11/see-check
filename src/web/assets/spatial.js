@@ -766,7 +766,7 @@ let currentEuler = null;
 let targetEuler = null;
 // Movement state — 3-axis velocity with damping
 let moveState = { x: 0, y: 0, z: 0 };
-let currentVelocity = null;
+let currentVelocity = new THREE.Vector3();
 // Mouse state
 let flightLeftDown = false, flightRightDown = false;
 let flightLastMouseX = 0, flightLastMouseY = 0;
