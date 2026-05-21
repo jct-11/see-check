@@ -877,7 +877,9 @@ async function init3DScene() {
   scene.background = new THREE.Color(0xffffff);
 
   // Reference grid (10m x 10m, gray)
-  const grid = new THREE.GridHelper(10, 20, 0x888888, 0x444444);
+  const grid = new THREE.GridHelper(10, 20, 0xd0d0d0, 0xe8e8e8);
+  grid.material.opacity = 0.25;
+  grid.material.transparent = true;
   grid.position.y = 0;
   scene.add(grid);
 
@@ -985,8 +987,8 @@ function onFlightMouseMove(e) {
   const dx = e.clientX - flightLastMouseX;
   const dy = e.clientY - flightLastMouseY;
   if (flightLeftDown) {
-    targetEuler.y -= dx * FLIGHT_SENSITIVITY;
-    targetEuler.x -= dy * FLIGHT_SENSITIVITY;
+    targetEuler.y += dx * FLIGHT_SENSITIVITY;
+    targetEuler.x += dy * FLIGHT_SENSITIVITY;
   }
   if (flightRightDown) {
     if (!camera3d) return;
@@ -1016,8 +1018,8 @@ function onFlightKeyDown(e) {
   switch (key) {
     case 'w': moveState.z = 1; break;
     case 's': moveState.z = -1; break;
-    case 'a': moveState.x = -1; break;
-    case 'd': moveState.x = 1; break;
+    case 'a': moveState.x = 1; break;
+    case 'd': moveState.x = -1; break;
     case 'q': moveState.y = -1; break;
     case 'e': moveState.y = 1; break;
   }
