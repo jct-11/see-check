@@ -876,6 +876,11 @@ async function init3DScene() {
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0xffffff);
 
+  // Reference grid (10m x 10m, gray)
+  const grid = new THREE.GridHelper(10, 20, 0x888888, 0x444444);
+  grid.position.y = 0;
+  scene.add(grid);
+
   // Camera
   camera3d = new THREE.PerspectiveCamera(70, width / height, 0.001, 10000);
   camera3d.position.set(0, 0, 5);
@@ -982,7 +987,6 @@ function onFlightMouseMove(e) {
   if (flightLeftDown) {
     targetEuler.y -= dx * FLIGHT_SENSITIVITY;
     targetEuler.x -= dy * FLIGHT_SENSITIVITY;
-    targetEuler.x = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, targetEuler.x));
   }
   if (flightRightDown) {
     if (!camera3d) return;
