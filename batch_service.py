@@ -732,27 +732,51 @@ async def upload_frames(batch_id: str, files: list[UploadFile] = File(...)):
     }
 
 def _auto_dgsg_pipeline(batch_id: str):
-    """后台线程：推理完成后自动跑 dgsg 建图管线 + 启动 viewer"""
+    """后台线程：推理完成后自动跑 dgsg 建图管线 + convert 转换 + 启动 viewer"""
     pipeline_script = "/home/sscy/lingbot-map/stmem-main/run_dgsg_pipeline.sh"
+    convert_script = "/home/sscy/lingbot-map/stmem-main/scripts/convert_memory_pc.py"
     update_status(dgsg_status="building")
     try:
-        write_log(f"自动建图管线启动: batch={batch_id}", "info")
+        write_log(f"[DGSG] 建图管线启动: batch={batch_id}", "info")
         result = subprocess.run(
             ["bash", pipeline_script, batch_id],
             capture_output=True, text=True, timeout=3600
         )
         if result.returncode == 0:
             update_status(dgsg_status="done")
-            write_log("自动建图管线完成", "ok")
+            write_log("[DGSG] 建图管线完成", "ok")
+
+            # ── 建图成功后自动 convert ──
+            write_log(f"[CONVERT] 开始转换点云数据: batch={batch_id}", "info")
+            try:
+                cv_result = subprocess.run(
+                    ["python3", convert_script, batch_id],
+                    capture_output=True, text=True, timeout=300
+                )
+                for line in cv_result.stdout.strip().split('\n'):
+                    if line.strip():
+                        write_log(f"[CONVERT] {line.strip()}", "info")
+                if cv_result.returncode != 0:
+                    write_log(f"[CONVERT] 转换失败 (rc={cv_result.returncode}): {cv_result.stderr[:300]}", "err")
+                else:
+                    write_log("[CONVERT] 转换完成，前端可切换至空间记忆模式", "ok")
+            except subprocess.TimeoutExpired:
+                write_log("[CONVERT] 转换超时（>5分钟）", "err")
+            except Exception as e:
+                write_log(f"[CONVERT] 转换异常: {e}", "err")
         else:
             update_status(dgsg_status="error", dgsg_error=result.stderr[:200])
-            write_log(f"自动建图管线失败 (rc={result.returncode}): {result.stderr[:200]}", "err")
+            write_log(f"[DGSG] 建图管线失败 (rc={result.returncode}): {result.stderr[:200]}", "err")
+            if result.stdout:
+                for line in result.stdout.strip().split('\n')[-5:]:
+                    if line.strip():
+                        write_log(f"[DGSG] {line.strip()}", "err")
     except subprocess.TimeoutExpired:
         update_status(dgsg_status="error", dgsg_error="timeout")
-        write_log("自动建图管线超时（>1小时），已终止", "err")
+        write_log("[DGSG] 建图管线超时（>1小时），已终止", "err")
     except Exception as e:
         update_status(dgsg_status="error", dgsg_error=str(e))
-        write_log(f"自动建图管线异常: {e}", "err")
+        write_log(f"[DGSG] 建图管线异常: {e}", "err")
 
 @app.post("/batch/{batch_id}/finish_inference")
 async def finish_inference(batch_id: str):

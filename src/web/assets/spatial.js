@@ -1137,21 +1137,39 @@ function updateReset(delta) {
 async function loadMemoryPointCloud() {
   if (memorySceneLoaded || memorySceneLoading) return;
 
+  const tTotal0 = performance.now();
+
   const container = document.getElementById('spatialCanvasContainer');
   let loadingEl = document.getElementById('memoryLoadingOverlay');
   if (!loadingEl && container) {
     loadingEl = document.createElement('div');
     loadingEl.id = 'memoryLoadingOverlay';
-    loadingEl.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#888;font-size:16px;z-index:30;pointer-events:none;';
+    loadingEl.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#666;font-size:14px;z-index:30;pointer-events:none;text-align:center;line-height:1.8;white-space:pre-line;';
     loadingEl.textContent = '加载空间记忆中...';
     container.appendChild(loadingEl);
+  }
+  function _updateLoading(text) {
+    if (loadingEl) loadingEl.textContent = text;
   }
 
   try {
     memorySceneLoading = true;
+
+    // ── Phase 1: Fetch binary ──
+    const tFetch = performance.now();
+    _updateLoading('正在下载点云数据...');
+    console.log('[Memory] fetch start: /assets/memory_pc.bin');
+
     const binResp = await fetch('/assets/memory_pc.bin');
     if (!binResp.ok) throw new Error('memory_pc.bin not found (status ' + binResp.status + ')');
     const buf = await binResp.arrayBuffer();
+    const fetchMs = (performance.now() - tFetch).toFixed(0);
+    const sizeMb = (buf.byteLength / (1024 * 1024)).toFixed(1);
+    console.log('[Memory] fetch done: ' + sizeMb + ' MB in ' + fetchMs + 'ms');
+
+    // ── Phase 2: Parse binary ──
+    const tParse = performance.now();
+    _updateLoading('正在解析点云数据...');
 
     const headerView = new DataView(buf);
     const N = headerView.getUint32(0, true);
@@ -1164,7 +1182,12 @@ async function loadMemoryPointCloud() {
     const colors = new Float32Array(buf, OFFSET_COL, N * 3);
     const objIdx = new Uint16Array(buf, OFFSET_IDX, N);
 
-    console.log('[Memory] Loaded ' + N + ' points from memory_pc.bin');
+    const parseMs = (performance.now() - tParse).toFixed(0);
+    console.log('[Memory] parsed ' + N + ' points in ' + parseMs + 'ms');
+
+    // ── Phase 3: Build geometry + GPU upload ──
+    const tGeom = performance.now();
+    _updateLoading('正在构建3D几何...');
 
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -1180,7 +1203,13 @@ async function loadMemoryPointCloud() {
     memoryPointCloud = new THREE.Points(geom, mat);
     memoryScene.add(memoryPointCloud);
 
-    // Compute scene bounding info for clampCameraToSphere
+    const geomMs = (performance.now() - tGeom).toFixed(0);
+    console.log('[Memory] geometry + GPU upload in ' + geomMs + 'ms');
+
+    // ── Phase 4: Compute bounding sphere ──
+    const tBounds = performance.now();
+    _updateLoading('正在计算场景范围...');
+
     let minX = Infinity, minY = Infinity, minZ = Infinity;
     let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
     for (let i = 0; i < N * 3; i += 3) {
@@ -1192,21 +1221,32 @@ async function loadMemoryPointCloud() {
     memorySceneCenter = [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2];
     memorySceneScale = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
 
-    console.log('[Memory] Scene center:', memorySceneCenter, 'scale:', memorySceneScale);
+    const boundsMs = (performance.now() - tBounds).toFixed(0);
+    console.log('[Memory] bounds: center=' + JSON.stringify(memorySceneCenter.map(v => v.toFixed(2))) + ' scale=' + memorySceneScale.toFixed(2) + ' (' + boundsMs + 'ms)');
 
+    // ── Phase 5: Load labels ──
+    _updateLoading('正在加载物体标签...');
     await loadMemoryLabels(objIdx, positions, N);
 
     memorySceneLoaded = true;
+
+    const totalMs = (performance.now() - tTotal0).toFixed(0);
+    _updateLoading('空间记忆加载完成 (' + totalMs + 'ms)\n' + N.toLocaleString() + ' 点, ' + memoryLabelSprites.length + ' 标签');
+    console.log('[Memory] TOTAL load time: ' + totalMs + 'ms — ' + N.toLocaleString() + ' points, ' + memoryLabelSprites.length + ' labels');
+
+    // Clear overlay after 1.5s
+    setTimeout(() => { if (loadingEl) loadingEl.remove(); }, 1500);
   } catch (err) {
-    console.warn('[Memory] Failed to load memory point cloud:', err.message);
+    console.warn('[Memory] FAILED:', err.message, err);
+    _updateLoading('加载失败: ' + err.message + '\n请确认建图管线已完成');
     const toggleEl = document.getElementById('viewModeToggle');
     if (toggleEl) {
-      toggleEl.title = '空间记忆数据未生成，请运行 convert_memory_pc.py';
+      toggleEl.title = '空间记忆数据未生成，请等待建图管线完成';
       toggleEl.style.opacity = '0.5';
     }
+    setTimeout(() => { if (loadingEl) loadingEl.remove(); }, 5000);
   } finally {
     memorySceneLoading = false;
-    if (loadingEl) loadingEl.remove();
   }
 }
 
@@ -1231,19 +1271,24 @@ function makeTextSprite(text) {
 
 async function loadMemoryLabels(objIdx, positions, N) {
   try {
+    const tLabel = performance.now();
+
     const sgResp = await fetch('/assets/memory_scene_graph.json');
     if (!sgResp.ok) {
-      console.warn('[Memory] scene_graph.json not found, skipping labels');
+      console.warn('[Memory] scene_graph.json not found (status ' + sgResp.status + '), skipping labels');
       return;
     }
     memorySceneGraph = await sgResp.json();
     const nodes = memorySceneGraph.nodes;
+    console.log('[Memory] scene_graph loaded: ' + nodes.length + ' nodes');
 
     // Compute per-object centroid from point data
+    const tCentroid = performance.now();
     const nodeMap = {};
+    let bgCount = 0;
     for (let i = 0; i < N; i++) {
       const oid = objIdx[i];
-      if (oid === 0) continue;
+      if (oid === 0) { bgCount++; continue; }
       if (!nodeMap[oid]) nodeMap[oid] = { sx: 0, sy: 0, sz: 0, count: 0 };
       const i3 = i * 3;
       nodeMap[oid].sx += positions[i3];
@@ -1251,8 +1296,14 @@ async function loadMemoryLabels(objIdx, positions, N) {
       nodeMap[oid].sz += positions[i3 + 2];
       nodeMap[oid].count++;
     }
+    const centroidMs = (performance.now() - tCentroid).toFixed(0);
+    const objCount = Object.keys(nodeMap).length;
+    console.log('[Memory] centroid computed: ' + objCount + ' objects (bg=' + bgCount + '), ' + centroidMs + 'ms');
 
     // Create sprite labels
+    const tSprites = performance.now();
+    let createdCount = 0;
+    let fallbackCount = 0;
     for (const node of nodes) {
       if (node.idx == null) continue;
       const centroid = nodeMap[node.idx];
@@ -1262,10 +1313,13 @@ async function loadMemoryLabels(objIdx, positions, N) {
         cx = centroid.sx / centroid.count;
         cy = centroid.sy / centroid.count;
         cz = centroid.sz / centroid.count;
+        createdCount++;
       } else {
         cx = node.center?.[0] ?? 0;
         cy = node.center?.[1] ?? 0;
         cz = node.center?.[2] ?? 0;
+        fallbackCount++;
+        console.log('[Memory] label "' + node.category + '" (idx=' + node.idx + ') using fallback center, point count=' + (centroid ? centroid.count : 0));
       }
 
       const sprite = makeTextSprite(node.category || 'object');
@@ -1275,9 +1329,11 @@ async function loadMemoryLabels(objIdx, positions, N) {
       memoryLabelSprites.push(sprite);
     }
 
-    console.log('[Memory] Created ' + memoryLabelSprites.length + ' labels');
+    const spriteMs = (performance.now() - tSprites).toFixed(0);
+    const totalLabelMs = (performance.now() - tLabel).toFixed(0);
+    console.log('[Memory] labels created: ' + createdCount + ' centroid + ' + fallbackCount + ' fallback, sprites=' + spriteMs + 'ms, total=' + totalLabelMs + 'ms');
   } catch (err) {
-    console.warn('[Memory] Failed to load labels:', err.message);
+    console.warn('[Memory] Failed to load labels:', err.message, err);
   }
 }
 
