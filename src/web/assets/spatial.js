@@ -1060,8 +1060,11 @@ function onFlightKeyUp(e) {
 
 function clampCameraToSphere() {
   if (!camera3d) return;
-  const cx = sceneCenter[0], cy = sceneCenter[1], cz = sceneCenter[2];
-  const lim = Math.max(sceneScale * 1.2, 3.0);
+  const cx = viewMode === 'memory' && memorySceneLoaded ? memorySceneCenter[0] : sceneCenter[0];
+  const cy = viewMode === 'memory' && memorySceneLoaded ? memorySceneCenter[1] : sceneCenter[1];
+  const cz = viewMode === 'memory' && memorySceneLoaded ? memorySceneCenter[2] : sceneCenter[2];
+  const sc = viewMode === 'memory' && memorySceneLoaded ? memorySceneScale : sceneScale;
+  const lim = Math.max(sc * 1.2, 3.0);
   const dx = camera3d.position.x - cx;
   const dy = camera3d.position.y - cy;
   const dz = camera3d.position.z - cz;
@@ -1277,6 +1280,45 @@ async function loadMemoryLabels(objIdx, positions, N) {
   }
 }
 
+async function switchViewMode(mode) {
+  if (viewMode === mode) return;
+
+  const spatialUI = document.getElementById('spatialModeUI');
+  const btns = document.querySelectorAll('.mode-btn');
+
+  if (mode === 'memory') {
+    if (!memorySceneLoaded) {
+      await loadMemoryPointCloud();
+      if (!memorySceneLoaded) return;
+    }
+
+    if (spatialUI) spatialUI.style.display = 'none';
+    cameraFollowEnabled = false;
+
+    const cx = memorySceneCenter[0], cy = memorySceneCenter[1], cz = memorySceneCenter[2];
+    const r = Math.max(memorySceneScale * 1.2, 3.0);
+    const dist = r * 1.8;
+    camera3d.position.set(cx + dist * 0.6, cy + dist * 0.8, cz + dist * 0.8);
+    camera3d.lookAt(cx, cy, cz);
+    if (currentEuler) {
+      currentEuler.setFromQuaternion(camera3d.quaternion, 'YXZ');
+      targetEuler.copy(currentEuler);
+    }
+
+    viewMode = 'memory';
+  } else {
+    if (spatialUI) spatialUI.style.display = '';
+    viewMode = 'spatial';
+  }
+
+  btns.forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === mode);
+    b.setAttribute('aria-pressed', b.dataset.mode === mode ? 'true' : 'false');
+  });
+
+  console.log('[Memory] View mode:', viewMode);
+}
+
 // ---------- Animation Loop ----------
 
 function animate() {
@@ -1291,7 +1333,7 @@ function animate() {
   const delta = Math.min((now - lastRenderTime) / 1000, 0.1);
 
   // Camera follow (OpenCV y-down -> flip camera up)
-  if (cameraFollowEnabled && followSmoothedPos && followLookTarget) {
+  if (viewMode === 'spatial' && cameraFollowEnabled && followSmoothedPos && followLookTarget) {
     camera3d.position.copy(followSmoothedPos);
     camera3d.up.set(0, -1, 0);
     camera3d.lookAt(followLookTarget);
@@ -1300,14 +1342,15 @@ function animate() {
       currentEuler.setFromQuaternion(camera3d.quaternion, 'YXZ');
       targetEuler.copy(currentEuler);
     }
-  } else if (!cameraFollowEnabled && camera3d) {
+  } else if (viewMode === 'memory' || (!cameraFollowEnabled && camera3d)) {
     // Free-flight: reset animation, rotation smoothing, movement
     updateReset(delta);
     updateCameraRotation(delta);
     updateFlightMovement(delta);
   }
 
-  if (renderer && scene && camera3d) {
+  const activeScene = (viewMode === 'memory' && memorySceneLoaded) ? memoryScene : scene;
+  if (renderer && activeScene && camera3d) {
     frameCount++;
     const now2 = performance.now();
     if (now2 - frameTime >= 1000) {
@@ -1316,7 +1359,7 @@ function animate() {
       frameTime = now2;
     }
     const tRender0 = performance.now();
-    renderer.render(scene, camera3d);
+    renderer.render(activeScene, camera3d);
     const tRender1 = performance.now();
     if (frameCount % 15 === 0) {
       console.log("[DEBUG-render] frame " + frameCount + " render in " + (tRender1 - tRender0).toFixed(1) + " ms, accumCount=" + accumCount + ", sceneObjs=" + scene.children.length);
@@ -2654,6 +2697,12 @@ function initEventListeners() {
       SpatialVisualizer.togglePointCloud();
     });
   }
+
+  document.querySelectorAll('.mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      switchViewMode(btn.dataset.mode);
+    });
+  });
 }
 
 /**
