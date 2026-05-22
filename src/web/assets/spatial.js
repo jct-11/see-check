@@ -759,6 +759,14 @@ let PLYLoader = null;
 let scene = null;
 let camera3d = null;
 let renderer = null;
+let memoryScene = null;
+let memorySceneLoaded = false;
+let memoryPointCloud = null;
+let memoryLabelSprites = [];
+let memorySceneGraph = null;
+let viewMode = 'spatial';
+let memorySceneCenter = [0, 0, 0];
+let memorySceneScale = 1.0;
 let controls = null; // removed OrbitControls, kept for compat
 let animationId = null;
 // Camera rotation — Euler smoothing
@@ -908,6 +916,19 @@ async function init3DScene() {
   renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
   window.addEventListener('keydown', onFlightKeyDown);
   window.addEventListener('keyup', onFlightKeyUp);
+
+  // Memory scene (lazy-initialized on first mode switch)
+  memoryScene = new THREE.Scene();
+  memoryScene.background = new THREE.Color(0xffffff);
+  const memoryGrid = new THREE.GridHelper(10, 20, 0xd0d0d0, 0xe8e8e8);
+  memoryGrid.material.opacity = 0.25;
+  memoryGrid.material.transparent = true;
+  memoryGrid.position.y = 0;
+  memoryScene.add(memoryGrid);
+
+  // Show mode toggle button
+  const toggleEl = document.getElementById('viewModeToggle');
+  if (toggleEl) toggleEl.style.display = 'flex';
 
   // Mode toggle and reset keys (separate from movement keys)
   window.addEventListener('keydown', function(e) {
