@@ -634,15 +634,6 @@ async def start_inference(batch_id: str, body: dict):
 
     frames_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── 清空 lingbot 实验目录，确保每次采集从干净状态开始 ──
-    lingbot_exp = Path("/home/liangjiahua/dgsg-orin/experiments/mydata/lingbot")
-    if lingbot_exp.exists():
-        shutil.rmtree(lingbot_exp)
-    lingbot_exp.mkdir(parents=True, exist_ok=True)
-    lingbot_data = Path("/home/liangjiahua/dgsg-orin/data/mydata/lingbot")
-    if lingbot_data.exists():
-        shutil.rmtree(lingbot_data)
-    write_log("已清空 lingbot 实验/数据目录", "info")
     
     # 获取已上传的帧数（保留之前上传的帧计数）
     exts = (".jpg", ".jpeg", ".png")

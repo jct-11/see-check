@@ -34,6 +34,15 @@ fi
 BATCH_DIR="${STMEN_DIR}/data/${BATCH_ID}"
 OUTPUT_DIR="${DGSG_DIR}/data/mydata/${SCENE_NAME}"
 
+# ── 清空 lingbot 旧数据，确保每次建图从干净状态开始 ──
+if [ "${SCENE_NAME}" = "lingbot" ]; then
+    echo "🧹 清空 lingbot 旧数据..."
+    EXP_DIR="${DGSG_DIR}/experiments/mydata/${SCENE_NAME}"
+    rm -rf "${OUTPUT_DIR}" 2>/dev/null || true
+    rm -rf "${EXP_DIR}" 2>/dev/null || true
+    echo "✓ lingbot 旧数据已清空"
+fi
+
 # ── 检查 batch 数据是否存在 ──
 if [ ! -d "${BATCH_DIR}/frames" ]; then
     echo "❌ batch 数据不存在: ${BATCH_DIR}/frames"
