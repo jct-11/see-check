@@ -761,6 +761,7 @@ let camera3d = null;
 let renderer = null;
 let memoryScene = null;
 let memorySceneLoaded = false;
+let memorySceneLoading = false;
 let memoryPointCloud = null;
 let memoryLabelSprites = [];
 let memorySceneGraph = null;
@@ -1130,7 +1131,7 @@ function updateReset(delta) {
 // ---------- Memory Point Cloud Loader ----------
 
 async function loadMemoryPointCloud() {
-  if (memorySceneLoaded) return;
+  if (memorySceneLoaded || memorySceneLoading) return;
 
   const container = document.getElementById('spatialCanvasContainer');
   let loadingEl = document.getElementById('memoryLoadingOverlay');
@@ -1143,6 +1144,7 @@ async function loadMemoryPointCloud() {
   }
 
   try {
+    memorySceneLoading = true;
     const binResp = await fetch('/assets/memory_pc.bin');
     if (!binResp.ok) throw new Error('memory_pc.bin not found (status ' + binResp.status + ')');
     const buf = await binResp.arrayBuffer();
@@ -1200,6 +1202,7 @@ async function loadMemoryPointCloud() {
       toggleEl.style.opacity = '0.5';
     }
   } finally {
+    memorySceneLoading = false;
     if (loadingEl) loadingEl.remove();
   }
 }
