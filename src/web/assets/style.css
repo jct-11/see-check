@@ -995,6 +995,40 @@
       font-weight: 600;
       font-family: 'SF Mono', Monaco, Consolas, monospace;
     }
+    .view-mode-toggle {
+      position: absolute;
+      top: 12px;
+      right: 16px;
+      z-index: 20;
+      display: flex;
+      gap: 4px;
+      background: rgba(0, 0, 0, 0.45);
+      border-radius: 8px;
+      padding: 3px;
+      backdrop-filter: blur(6px);
+    }
+
+    .mode-btn {
+      padding: 6px 14px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      color: #ccc;
+      background: transparent;
+      transition: all 0.2s;
+    }
+
+    .mode-btn.active {
+      background: #4caf50;
+      color: #fff;
+    }
+
+    .mode-btn:not(.active):hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.1);
+    }
+
     @media (max-width: 1100px) {
       .home-hero { padding: 48px 28px 40px; }
       .home-title { font-size: 44px; }
