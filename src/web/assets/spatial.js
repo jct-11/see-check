@@ -2926,3 +2926,11 @@ async function startTestProcess() {
     if (testBtn) testBtn.disabled = false;
   }
 }
+
+window.onSpatialTabShow = function() {
+  const toggleEl = document.getElementById('viewModeToggle');
+  if (toggleEl && renderer) {
+    toggleEl.style.display = 'flex';
+  }
+};
+}
