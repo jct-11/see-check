@@ -998,6 +998,7 @@ function onFlightMouseMove(e) {
     const scale = FLIGHT_BASE_SPEED * 0.005;
     camera3d.position.addScaledVector(right, -dx * scale);
     camera3d.position.addScaledVector(up, dy * scale);
+    clampCameraToSphere();
   }
   flightLastMouseX = e.clientX;
   flightLastMouseY = e.clientY;
@@ -1008,6 +1009,7 @@ function onFlightWheel(e) {
   if (!camera3d || cameraFollowEnabled) return;
   const dir = camera3d.getWorldDirection(new THREE.Vector3());
   camera3d.position.addScaledVector(dir, -e.deltaY * FLIGHT_SCROLL_SPEED);
+  clampCameraToSphere();
 }
 
 function onFlightKeyDown(e) {
@@ -1031,6 +1033,20 @@ function onFlightKeyUp(e) {
     case 'w': case 's': moveState.z = 0; break;
     case 'a': case 'd': moveState.x = 0; break;
     case 'q': case 'e': moveState.y = 0; break;
+  }
+}
+
+function clampCameraToSphere() {
+  if (!camera3d) return;
+  const cx = sceneCenter[0], cy = sceneCenter[1], cz = sceneCenter[2];
+  const lim = Math.max(sceneScale * 1.2, 3.0);
+  const dx = camera3d.position.x - cx;
+  const dy = camera3d.position.y - cy;
+  const dz = camera3d.position.z - cz;
+  const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (dist > lim) {
+    const s = lim / dist;
+    camera3d.position.set(cx + dx * s, cy + dy * s, cz + dz * s);
   }
 }
 
@@ -1062,6 +1078,8 @@ function updateFlightMovement(delta) {
     camera3d.position.addScaledVector(right, currentVelocity.x * delta);
     camera3d.position.addScaledVector(up, currentVelocity.y * delta);
   }
+
+  clampCameraToSphere();
 }
 
 function updateCameraRotation(delta) {
@@ -1753,6 +1771,8 @@ async function fetchNextFrame() {
       var totalFrames = framePointsObjects.length;
       addLog('所有帧点云拉取完成，共 ' + totalFrames + ' 帧', 'ok');
       disableCameraFollow();
+      // 开始轮询 dgsg 建图状态
+      startDgsgStatusPolling();
       return;
     }
     
@@ -1900,9 +1920,16 @@ function startStreamingFetchLoop() {
       if (statusResponse.ok) {
         const statusData = await statusResponse.json();
         if (statusData.status === 'completed') {
-          // 推理完成，标记为完成状态
           addLog('推理完成，等待拉取剩余帧...', 'info');
         }
+        // 触发 onStatusUpdate 回调（包含 dgsg_status）
+        updateStatus({
+          pointCount: statusData.total_points,
+          frameCount: statusData.processed_frames,
+          batchId: statusData.batch_id,
+          dgsg_status: statusData.dgsg_status,
+          processing: statusData.status === 'streaming',
+        });
       }
     } catch (err) {
       console.warn('状态监控失败:', err.message);
@@ -1915,6 +1942,34 @@ function startStreamingFetchLoop() {
   
   // 启动状态监控
   setTimeout(monitorStatus, 1000);
+}
+
+/**
+ * 推理完成后轮询 dgsg 建图状态
+ */
+function startDgsgStatusPolling() {
+  if (!fetchBatchId) return;
+
+  var pollDgsg = async () => {
+    try {
+      const resp = await fetch(`${BATCH_SERVER_URL}/batch/${fetchBatchId}/status`);
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.dgsg_status) {
+          updateStatus({ dgsg_status: data.dgsg_status });
+        }
+        // 建图完成或出错后停止轮询
+        if (data.dgsg_status === 'done' || data.dgsg_status === 'error') {
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('dgsg 状态轮询失败:', err.message);
+    }
+    setTimeout(pollDgsg, 3000);
+  };
+
+  setTimeout(pollDgsg, 2000);
 }
 
 async function initSpatialMemory() {
@@ -1989,6 +2044,26 @@ function initApiAndVisualizer() {
         if (fcEl) fcEl.textContent = status.collectedFrames + '/' + status.targetFrames;
         var ppEl = document.getElementById('processProgress');
         if (ppEl) ppEl.textContent = Math.round(status.collectedFrames / status.targetFrames * 100) + '%';
+      }
+      if (status.dgsg_status === 'building') {
+        var dsEl = document.getElementById('dgsgStatus');
+        var dtEl = document.getElementById('dgsgStatusText');
+        if (dsEl) dsEl.style.display = 'block';
+        if (dtEl) dtEl.textContent = '🔨 正在生成 3D 场景...';
+      } else if (status.dgsg_status === 'done') {
+        var dsEl = document.getElementById('dgsgStatus');
+        var dtEl = document.getElementById('dgsgStatusText');
+        var vlEl = document.getElementById('dgsgViewerLink');
+        if (dsEl) dsEl.style.display = 'block';
+        if (dtEl) dtEl.textContent = '✅ 3D 场景已就绪！';
+        if (vlEl) { vlEl.style.display = 'inline'; vlEl.href = 'http://localhost:5001'; }
+      } else if (status.dgsg_status === 'error') {
+        var dsEl = document.getElementById('dgsgStatus');
+        var dtEl = document.getElementById('dgsgStatusText');
+        var vlEl = document.getElementById('dgsgViewerLink');
+        if (dsEl) dsEl.style.display = 'block';
+        if (dtEl) dtEl.textContent = '❌ 建图失败';
+        if (vlEl) vlEl.style.display = 'none';
       }
       if (status.processing !== undefined) {
         var procEl = document.getElementById('stepProcessingStatus');

@@ -22,6 +22,7 @@ import json
 import time
 import glob
 import asyncio
+import subprocess
 import traceback
 import threading
 import shutil
@@ -133,6 +134,7 @@ batch_status = {
     "processed_frames": 0,
     "total_points": 0,
     "error_message": "",
+    "dgsg_status": "idle",  # idle → building → done → error
 }
 
 # 日志
@@ -307,6 +309,67 @@ def on_frame_callback(frame_idx, image_np, frame_output):
             "image_w": W,
             "image_h": H,
         }
+
+        # ── 保存 depth、pose、intrinsics 到硬盘（供 dgsg 管线使用）──
+        batch_id = model_state.get("current_batch_id")
+        if batch_id:
+            batch_dir = DATA_DIR / batch_id
+
+            depth_dir = batch_dir / "depth"
+            depth_dir.mkdir(exist_ok=True)
+            poses_dir = batch_dir / "poses"
+            poses_dir.mkdir(exist_ok=True)
+
+            depth_shape = _depth_np.shape
+            depth_h, depth_w = depth_shape[0], depth_shape[1]
+            if _depth_np.ndim > 2:
+                _depth_np = _depth_np.reshape(depth_h, depth_w)
+
+            # 从第一帧原始图片获取原始分辨率（depth 需要和 rgb 同尺寸）
+            orig_h, orig_w = H, W  # 默认用模型输出尺寸
+            frames_dir_check = batch_dir / "frames"
+            if frames_dir_check.exists():
+                any_frame = next(frames_dir_check.glob("*.jpg"), None)
+                if any_frame is None:
+                    any_frame = next(frames_dir_check.glob("*.png"), None)
+                if any_frame is not None:
+                    from PIL import Image as _Img
+                    with _Img.open(any_frame) as _img:
+                        orig_w, orig_h = _img.size  # PIL: (width, height)
+
+            # 如果深度图和原始 RGB 尺寸不同，需要 resize + 缩放 intrinsics
+            save_depth = _depth_np
+            save_intr = intr_np
+            if depth_h != orig_h or depth_w != orig_w:
+                scale_x = orig_w / depth_w
+                scale_y = orig_h / depth_h
+                save_intr = intr_np.copy()
+                save_intr[0, 0] *= scale_x
+                save_intr[1, 1] *= scale_y
+                save_intr[0, 2] *= scale_x
+                save_intr[1, 2] *= scale_y
+                d_img = Image.fromarray((_depth_np * 1000).clip(0, 65535).astype(np.uint16))
+                d_img = d_img.resize((orig_w, orig_h), Image.NEAREST)
+                save_depth = np.array(d_img).astype(np.float32) / 1000.0
+
+            depth_mm = (save_depth * 1000).clip(0, 65535).astype(np.uint16)
+            Image.fromarray(depth_mm).save(depth_dir / f"frame_{frame_idx:06d}.png")
+
+            c2w_4x4 = np.eye(4, dtype=np.float64)
+            c2w_4x4[:3, :4] = extrinsic_c2w_np
+            np.savetxt(poses_dir / f"frame_{frame_idx:06d}.txt", c2w_4x4, "%.15e")
+
+            intr_path = batch_dir / "intrinsics.json"
+            if not intr_path.exists():
+                with open(intr_path, "w") as f:
+                    json.dump({
+                        "fx": float(save_intr[0, 0]),
+                        "fy": float(save_intr[1, 1]),
+                        "cx": float(save_intr[0, 2]),
+                        "cy": float(save_intr[1, 2]),
+                        "w": orig_w,
+                        "h": orig_h,
+                    }, f)
 
         add_to_frame_cache(frame_idx, pred_pts, color_flat, conf_flat, camera)
 
@@ -668,6 +731,29 @@ async def upload_frames(batch_id: str, files: list[UploadFile] = File(...)):
         "total_frames": total_frames
     }
 
+def _auto_dgsg_pipeline(batch_id: str):
+    """后台线程：推理完成后自动跑 dgsg 建图管线 + 启动 viewer"""
+    pipeline_script = "/home/sscy/lingbot-map/stmem-main/run_dgsg_pipeline.sh"
+    update_status(dgsg_status="building")
+    try:
+        write_log(f"自动建图管线启动: batch={batch_id}", "info")
+        result = subprocess.run(
+            ["bash", pipeline_script, batch_id],
+            capture_output=True, text=True, timeout=3600
+        )
+        if result.returncode == 0:
+            update_status(dgsg_status="done")
+            write_log("自动建图管线完成", "ok")
+        else:
+            update_status(dgsg_status="error", dgsg_error=result.stderr[:200])
+            write_log(f"自动建图管线失败 (rc={result.returncode}): {result.stderr[:200]}", "err")
+    except subprocess.TimeoutExpired:
+        update_status(dgsg_status="error", dgsg_error="timeout")
+        write_log("自动建图管线超时（>1小时），已终止", "err")
+    except Exception as e:
+        update_status(dgsg_status="error", dgsg_error=str(e))
+        write_log(f"自动建图管线异常: {e}", "err")
+
 @app.post("/batch/{batch_id}/finish_inference")
 async def finish_inference(batch_id: str):
     """完成推理：通知监控线程不再处理新帧，等待处理完剩余帧后标记完成"""
@@ -695,7 +781,19 @@ async def finish_inference(batch_id: str):
     )
     
     write_log(f"推理完成，共 {total_processed} 帧，{total_points} 点", "ok")
-    
+
+    # 更新 latest 软链接，始终指向最新 batch
+    latest_link = DATA_DIR / "latest"
+    batch_dir = DATA_DIR / batch_id
+    if latest_link.exists() or latest_link.is_symlink():
+        latest_link.unlink()
+    os.symlink(batch_dir, latest_link)
+    write_log(f"latest → {batch_id}", "ok")
+
+    # 自动触发 dgsg 建图管线
+    threading.Thread(target=_auto_dgsg_pipeline, args=(batch_id,), daemon=True).start()
+    write_log("dgsg 建图管线已在后台启动", "info")
+
     return {
         "success": True,
         "batch_id": batch_id,
