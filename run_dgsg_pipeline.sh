@@ -118,6 +118,9 @@ with open(yaml_path, "w") as f:
 print(f"✓ intrinsics.yaml 已生成")
 PYEOF
 
+# 确保所有文件其他用户可读写
+chmod -R 777 "${OUTPUT_DIR}" 2>/dev/null || true
+
 FRAME_COUNT=$(ls "${OUTPUT_DIR}/rgb/" | wc -l)
 echo "✓ 数据就绪: ${FRAME_COUNT} 帧"
 
@@ -149,6 +152,9 @@ fi
 
 echo ""
 echo "✅ 建图完成！结果在 ${DGSG_DIR}/experiments/mydata/${SCENE_NAME}/"
+
+# 确保实验输出文件其他用户可读写
+chmod -R 777 "${DGSG_DIR}/experiments/mydata/${SCENE_NAME}" 2>/dev/null || true
 
 # ── 写完成标记（防止 viewer 加载不完整的实验数据）──
 touch "${DGSG_DIR}/experiments/mydata/${SCENE_NAME}/.pipeline_done"
