@@ -2989,4 +2989,3 @@ window.onSpatialTabShow = function() {
     toggleEl.style.display = 'flex';
   }
 };
-}
