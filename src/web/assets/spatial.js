@@ -1353,6 +1353,7 @@ async function switchViewMode(mode) {
 
     if (spatialUI) spatialUI.style.display = 'none';
     cameraFollowEnabled = false;
+    camera3d.up.set(0, 1, 0); // reset up vector (follow mode may have flipped it)
 
     const cx = memorySceneCenter[0], cy = memorySceneCenter[1], cz = memorySceneCenter[2];
     const r = Math.max(memorySceneScale * 1.2, 3.0);
