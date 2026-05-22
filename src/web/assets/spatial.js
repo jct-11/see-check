@@ -1195,7 +1195,7 @@ async function loadMemoryPointCloud() {
     geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Infinity);
 
     const mat = new THREE.PointsMaterial({
-      size: 0.003,
+      size: guiPointSize,
       vertexColors: true,
       sizeAttenuation: true,
     });
