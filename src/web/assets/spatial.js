@@ -1190,8 +1190,7 @@ async function loadMemoryPointCloud() {
 
     console.log('[Memory] Scene center:', memorySceneCenter, 'scale:', memorySceneScale);
 
-    // loadMemoryLabels will be added in Task 6 — skip for now
-    // await loadMemoryLabels(objIdx, positions, N);
+    await loadMemoryLabels(objIdx, positions, N);
 
     memorySceneLoaded = true;
   } catch (err) {
@@ -1204,6 +1203,76 @@ async function loadMemoryPointCloud() {
   } finally {
     memorySceneLoading = false;
     if (loadingEl) loadingEl.remove();
+  }
+}
+
+function makeTextSprite(text) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  ctx.font = 'Bold 28px -apple-system, sans-serif';
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 128, 32);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  const spriteMat = new THREE.SpriteMaterial({ map: texture, depthTest: false, depthWrite: false });
+  return new THREE.Sprite(spriteMat);
+}
+
+async function loadMemoryLabels(objIdx, positions, N) {
+  try {
+    const sgResp = await fetch('/assets/memory_scene_graph.json');
+    if (!sgResp.ok) {
+      console.warn('[Memory] scene_graph.json not found, skipping labels');
+      return;
+    }
+    memorySceneGraph = await sgResp.json();
+    const nodes = memorySceneGraph.nodes;
+
+    // Compute per-object centroid from point data
+    const nodeMap = {};
+    for (let i = 0; i < N; i++) {
+      const oid = objIdx[i];
+      if (oid === 0) continue;
+      if (!nodeMap[oid]) nodeMap[oid] = { sx: 0, sy: 0, sz: 0, count: 0 };
+      const i3 = i * 3;
+      nodeMap[oid].sx += positions[i3];
+      nodeMap[oid].sy += positions[i3 + 1];
+      nodeMap[oid].sz += positions[i3 + 2];
+      nodeMap[oid].count++;
+    }
+
+    // Create sprite labels
+    for (const node of nodes) {
+      const centroid = nodeMap[node.idx];
+      let cx, cy, cz;
+
+      if (centroid && centroid.count > 100) {
+        cx = centroid.sx / centroid.count;
+        cy = centroid.sy / centroid.count;
+        cz = centroid.sz / centroid.count;
+      } else {
+        cx = node.center[0];
+        cy = node.center[1];
+        cz = node.center[2];
+      }
+
+      const sprite = makeTextSprite(node.category);
+      sprite.position.set(cx, cy + 0.15, cz);
+      sprite.scale.set(0.3, 0.1, 1);
+      memoryScene.add(sprite);
+      memoryLabelSprites.push(sprite);
+    }
+
+    console.log('[Memory] Created ' + memoryLabelSprites.length + ' labels');
+  } catch (err) {
+    console.warn('[Memory] Failed to load labels:', err.message);
   }
 }
 
