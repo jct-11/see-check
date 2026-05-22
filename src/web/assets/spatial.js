@@ -766,6 +766,7 @@ let memoryPointCloud = null;
 let memoryLabelSprites = [];
 let memorySceneGraph = null;
 let viewMode = 'spatial';
+let modeSwitchGen = 0;
 let memorySceneCenter = [0, 0, 0];
 let memorySceneScale = 1.0;
 let controls = null; // removed OrbitControls, kept for compat
@@ -1282,6 +1283,7 @@ async function loadMemoryLabels(objIdx, positions, N) {
 
 async function switchViewMode(mode) {
   if (viewMode === mode) return;
+  const gen = ++modeSwitchGen;
 
   const spatialUI = document.getElementById('spatialModeUI');
   const btns = document.querySelectorAll('.mode-btn');
@@ -1289,6 +1291,7 @@ async function switchViewMode(mode) {
   if (mode === 'memory') {
     if (!memorySceneLoaded) {
       await loadMemoryPointCloud();
+      if (gen !== modeSwitchGen) return; // newer switch preempted us
       if (!memorySceneLoaded) return;
     }
 
