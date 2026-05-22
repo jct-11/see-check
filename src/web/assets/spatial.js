@@ -1324,7 +1324,7 @@ async function loadMemoryLabels(objIdx, positions, N) {
 
       const sprite = makeTextSprite(node.category || 'object');
       sprite.position.set(cx, cy + 0.15, cz);
-      sprite.scale.set(0.3, 0.1, 1);
+      sprite.scale.set(0.15, 0.05, 1);
       memoryScene.add(sprite);
       memoryLabelSprites.push(sprite);
     }
