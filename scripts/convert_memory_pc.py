@@ -25,11 +25,18 @@ JSON_OUT = os.path.join(ASSETS_DIR, "memory_scene_graph.json")
 
 
 def main():
-    print(f"Loading {NPZ_PATH} ...")
-    data = np.load(NPZ_PATH)
-    means3D = data["means3D"].astype(np.float32)
-    rgb_colors = data["rgb_colors"].astype(np.float32)
-    object_idx = data["object_idx"].astype(np.uint16)
+    try:
+        print(f"Loading {NPZ_PATH} ...")
+        data = np.load(NPZ_PATH)
+        means3D = data["means3D"].astype(np.float32)
+        rgb_colors = data["rgb_colors"].astype(np.float32)
+        object_idx = data["object_idx"].astype(np.uint16)
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyError as e:
+        print(f"Error: missing key {e} in {NPZ_PATH}", file=sys.stderr)
+        sys.exit(1)
 
     n = len(means3D)
     print(f"Total points: {n}")
@@ -39,6 +46,8 @@ def main():
     pos_bytes = means3D.tobytes()
     col_bytes = rgb_colors.tobytes()
     idx_bytes = object_idx.tobytes()
+
+    os.makedirs(ASSETS_DIR, exist_ok=True)
 
     with open(BIN_OUT, "wb") as f:
         f.write(struct.pack("<I", n))           # point count (4 bytes)
