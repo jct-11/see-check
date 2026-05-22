@@ -5,3 +5,5 @@ logs/
 .env
 .DS_Store
 .setup/
+src/web/assets/memory_pc.bin
+src/web/assets/memory_scene_graph.json
