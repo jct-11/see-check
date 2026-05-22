@@ -1127,6 +1127,83 @@ function updateReset(delta) {
   camera3d.position.lerpVectors(resetStartPos, resetStartTarget, ease);
 }
 
+// ---------- Memory Point Cloud Loader ----------
+
+async function loadMemoryPointCloud() {
+  if (memorySceneLoaded) return;
+
+  const container = document.getElementById('spatialCanvasContainer');
+  let loadingEl = document.getElementById('memoryLoadingOverlay');
+  if (!loadingEl && container) {
+    loadingEl = document.createElement('div');
+    loadingEl.id = 'memoryLoadingOverlay';
+    loadingEl.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#888;font-size:16px;z-index:30;pointer-events:none;';
+    loadingEl.textContent = '加载空间记忆中...';
+    container.appendChild(loadingEl);
+  }
+
+  try {
+    const binResp = await fetch('/assets/memory_pc.bin');
+    if (!binResp.ok) throw new Error('memory_pc.bin not found (status ' + binResp.status + ')');
+    const buf = await binResp.arrayBuffer();
+
+    const headerView = new DataView(buf);
+    const N = headerView.getUint32(0, true);
+
+    const OFFSET_POS = 4;
+    const OFFSET_COL = 4 + N * 12;
+    const OFFSET_IDX = 4 + N * 24;
+
+    const positions = new Float32Array(buf, OFFSET_POS, N * 3);
+    const colors = new Float32Array(buf, OFFSET_COL, N * 3);
+    const objIdx = new Uint16Array(buf, OFFSET_IDX, N);
+
+    console.log('[Memory] Loaded ' + N + ' points from memory_pc.bin');
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Infinity);
+
+    const mat = new THREE.PointsMaterial({
+      size: 0.003,
+      vertexColors: true,
+      sizeAttenuation: true,
+    });
+
+    memoryPointCloud = new THREE.Points(geom, mat);
+    memoryScene.add(memoryPointCloud);
+
+    // Compute scene bounding info for clampCameraToSphere
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (let i = 0; i < N * 3; i += 3) {
+      const x = positions[i], y = positions[i + 1], z = positions[i + 2];
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+      if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+    }
+    memorySceneCenter = [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2];
+    memorySceneScale = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
+
+    console.log('[Memory] Scene center:', memorySceneCenter, 'scale:', memorySceneScale);
+
+    // loadMemoryLabels will be added in Task 6 — skip for now
+    // await loadMemoryLabels(objIdx, positions, N);
+
+    memorySceneLoaded = true;
+  } catch (err) {
+    console.warn('[Memory] Failed to load memory point cloud:', err.message);
+    const toggleEl = document.getElementById('viewModeToggle');
+    if (toggleEl) {
+      toggleEl.title = '空间记忆数据未生成，请运行 convert_memory_pc.py';
+      toggleEl.style.opacity = '0.5';
+    }
+  } finally {
+    if (loadingEl) loadingEl.remove();
+  }
+}
+
 // ---------- Animation Loop ----------
 
 function animate() {
