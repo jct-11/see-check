@@ -1250,6 +1250,7 @@ async function loadMemoryLabels(objIdx, positions, N) {
 
     // Create sprite labels
     for (const node of nodes) {
+      if (node.idx == null) continue;
       const centroid = nodeMap[node.idx];
       let cx, cy, cz;
 
@@ -1258,12 +1259,12 @@ async function loadMemoryLabels(objIdx, positions, N) {
         cy = centroid.sy / centroid.count;
         cz = centroid.sz / centroid.count;
       } else {
-        cx = node.center[0];
-        cy = node.center[1];
-        cz = node.center[2];
+        cx = node.center?.[0] ?? 0;
+        cy = node.center?.[1] ?? 0;
+        cz = node.center?.[2] ?? 0;
       }
 
-      const sprite = makeTextSprite(node.category);
+      const sprite = makeTextSprite(node.category || 'object');
       sprite.position.set(cx, cy + 0.15, cz);
       sprite.scale.set(0.3, 0.1, 1);
       memoryScene.add(sprite);
