@@ -304,9 +304,9 @@
           </div>
         </div>
         
-        <div class="view-mode-toggle" id="viewModeToggle" style="display:none;">
-          <button class="mode-btn active" data-mode="spatial">实时采集</button>
-          <button class="mode-btn" data-mode="memory">空间记忆</button>
+        <div class="view-mode-toggle" id="viewModeToggle" style="display:none;" role="group" aria-label="视图模式">
+          <button class="mode-btn active" data-mode="spatial" aria-pressed="true">实时采集</button>
+          <button class="mode-btn" data-mode="memory" aria-pressed="false">空间记忆</button>
         </div>
 
         <div id="spatialCanvasContainer" class="canvas-container">
