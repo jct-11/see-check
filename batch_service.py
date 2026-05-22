@@ -631,8 +631,18 @@ async def start_inference(batch_id: str, body: dict):
     """开始流式推理"""
     batch_dir = DATA_DIR / batch_id
     frames_dir = batch_dir / "frames"
-    
+
     frames_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── 清空 lingbot 实验目录，确保每次采集从干净状态开始 ──
+    lingbot_exp = Path("/home/liangjiahua/dgsg-orin/experiments/mydata/lingbot")
+    if lingbot_exp.exists():
+        shutil.rmtree(lingbot_exp)
+    lingbot_exp.mkdir(parents=True, exist_ok=True)
+    lingbot_data = Path("/home/liangjiahua/dgsg-orin/data/mydata/lingbot")
+    if lingbot_data.exists():
+        shutil.rmtree(lingbot_data)
+    write_log("已清空 lingbot 实验/数据目录", "info")
     
     # 获取已上传的帧数（保留之前上传的帧计数）
     exts = (".jpg", ".jpeg", ".png")
@@ -735,11 +745,12 @@ def _auto_dgsg_pipeline(batch_id: str):
     """后台线程：推理完成后自动跑 dgsg 建图管线 + convert 转换 + 启动 viewer"""
     pipeline_script = "/home/sscy/lingbot-map/stmem-main/run_dgsg_pipeline.sh"
     convert_script = "/home/sscy/lingbot-map/stmem-main/scripts/convert_memory_pc.py"
+    scene_name = "lingbot"  # 固定输出到 lingbot 目录
     update_status(dgsg_status="building")
     try:
-        write_log(f"[DGSG] 建图管线启动: batch={batch_id}", "info")
+        write_log(f"[DGSG] 建图管线启动: batch={batch_id} → scene={scene_name}", "info")
         result = subprocess.run(
-            ["bash", pipeline_script, batch_id],
+            ["bash", pipeline_script, batch_id, scene_name],
             capture_output=True, text=True, timeout=3600
         )
         if result.returncode == 0:
@@ -747,10 +758,10 @@ def _auto_dgsg_pipeline(batch_id: str):
             write_log("[DGSG] 建图管线完成", "ok")
 
             # ── 建图成功后自动 convert ──
-            write_log(f"[CONVERT] 开始转换点云数据: batch={batch_id}", "info")
+            write_log(f"[CONVERT] 开始转换点云数据: scene={scene_name}", "info")
             try:
                 cv_result = subprocess.run(
-                    ["python3", convert_script, batch_id],
+                    ["python3", convert_script, scene_name],
                     capture_output=True, text=True, timeout=300
                 )
                 for line in cv_result.stdout.strip().split('\n'):
