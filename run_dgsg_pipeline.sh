@@ -70,7 +70,7 @@ cp "${BATCH_DIR}/frames"/* "${OUTPUT_DIR}/rgb/" 2>/dev/null || true
 if [ -d "${BATCH_DIR}/depth" ]; then
     cp "${BATCH_DIR}/depth"/* "${OUTPUT_DIR}/depth/" 2>/dev/null || true
 else
-    echo "⚠️  没有 depth 数据，跳过"
+    echo "❌ 没有 depth 数据，跳过"
     exit 1
 fi
 
@@ -78,9 +78,23 @@ fi
 if [ -d "${BATCH_DIR}/poses" ]; then
     cp "${BATCH_DIR}/poses"/* "${OUTPUT_DIR}/poses/" 2>/dev/null || true
 else
-    echo "⚠️  没有 poses 数据，跳过"
+    echo "❌ 没有 poses 数据，跳过"
     exit 1
 fi
+
+# ── 验证 rgb/depth/poses 数量一致 ──
+RGB_COUNT=$(ls "${OUTPUT_DIR}/rgb/" 2>/dev/null | wc -l)
+DEPTH_COUNT=$(ls "${OUTPUT_DIR}/depth/" 2>/dev/null | wc -l)
+POSES_COUNT=$(ls "${OUTPUT_DIR}/poses/" 2>/dev/null | wc -l)
+echo "📊 数据统计: rgb=${RGB_COUNT}, depth=${DEPTH_COUNT}, poses=${POSES_COUNT}"
+
+if [ "${RGB_COUNT}" -ne "${DEPTH_COUNT}" ] || [ "${RGB_COUNT}" -ne "${POSES_COUNT}" ]; then
+    echo "❌ 数据数量不匹配！rgb=${RGB_COUNT}, depth=${DEPTH_COUNT}, poses=${POSES_COUNT}"
+    echo "   通常是因为前端采集图片数超过了设定目标数"
+    echo "   请减少 FPS 设置或增加目标图片数后重试"
+    exit 1
+fi
+echo "✓ 数据数量一致: ${RGB_COUNT} 帧"
 
 # 读取 batch 的 intrinsics.json 生成 intrinsics.yaml
 python3 - "${BATCH_ID}" "${OUTPUT_DIR}" <<'PYEOF'

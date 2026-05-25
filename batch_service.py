@@ -102,7 +102,7 @@ model_state = {
 # 点云过滤参数（与 live_camera.py 一致）
 CONF_THRESHOLD = 0.7        # 置信度阈值
 DOWNSAMPLE_FACTOR = 10     # 下采样倍数
-MAX_CACHE_FRAMES = 300     # 内存缓存最大帧数
+MAX_CACHE_FRAMES = 600     # 内存缓存最大帧数
 
 # 点云帧缓存
 frame_cache = {}  # {frame_index: {"points": [...], "colors": [...], "confs": [...], "camera": {...}}}

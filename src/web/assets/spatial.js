@@ -285,11 +285,12 @@ function startContinuousCapture() {
     showCaptureProgress();
   }
 
-  // 采集当前帧
-  collectFrame();
+  if (!_stopping && totalFramesCollected < spatialCaptureTargetFrames) {
+    collectFrame();
+  }
 
   // 递归调度下一帧采集
-  if (spatialIsCapturing) {
+  if (spatialIsCapturing && !_stopping) {
     spatialCaptureTimer = setTimeout(startContinuousCapture, getFrameInterval());
   }
 }
@@ -340,8 +341,8 @@ let _stopping = false;  // prevent duplicate stopSpatialCapture calls
 async function collectFrame() {
   if (!spatialIsCapturing || (isBatchProcessing && !isInferenceStarted)) return;
 
-  // Fire-and-forget: kick off async capture, callback handles queue/upload
-  // setTimeout chain is NEVER blocked by await — critical for 20fps stability
+  if (_stopping || totalFramesCollected >= spatialCaptureTargetFrames) return;
+
   if (!captureCurrentFrame) {
     console.log('[Spatial API] collectFrame: captureCurrentFrame not set');
     return;
@@ -2278,21 +2279,17 @@ function initApiAndVisualizer() {
         var dsEl = document.getElementById('dgsgStatus');
         var dtEl = document.getElementById('dgsgStatusText');
         if (dsEl) dsEl.style.display = 'block';
-        if (dtEl) dtEl.textContent = '🔨 正在生成 3D 场景...';
+        if (dtEl) dtEl.textContent = '正在标上语义...';
       } else if (status.dgsg_status === 'done') {
         var dsEl = document.getElementById('dgsgStatus');
         var dtEl = document.getElementById('dgsgStatusText');
-        var vlEl = document.getElementById('dgsgViewerLink');
         if (dsEl) dsEl.style.display = 'block';
-        if (dtEl) dtEl.textContent = '✅ 3D 场景已就绪！';
-        if (vlEl) { vlEl.style.display = 'inline'; vlEl.href = 'http://192.168.0.200:5001'; }
+        if (dtEl) dtEl.textContent = '语义已标上';
       } else if (status.dgsg_status === 'error') {
         var dsEl = document.getElementById('dgsgStatus');
         var dtEl = document.getElementById('dgsgStatusText');
-        var vlEl = document.getElementById('dgsgViewerLink');
         if (dsEl) dsEl.style.display = 'block';
-        if (dtEl) dtEl.textContent = '❌ 建图失败';
-        if (vlEl) vlEl.style.display = 'none';
+        if (dtEl) dtEl.textContent = '语义标定失败';
       }
       if (status.processing !== undefined) {
         var procEl = document.getElementById('stepProcessingStatus');
