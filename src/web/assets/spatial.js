@@ -66,32 +66,6 @@ function smoothCameraPose(rawPose) {
   return SpatialState.smoothPose;
 }
 
-/**
- * 将 Base64 编码字符串转换为 Float32Array
- * @param {string} base64Str - Base64 编码的字符串
- * @returns {Float32Array} 解码后的 Float32Array
- */
-function base64ToFloat32Array(base64Str) {
-  if (!base64Str) return new Float32Array(0);
-
-  const t0 = performance.now();
-  
-  // 解码 Base64 为 ArrayBuffer
-  const binaryStr = atob(base64Str);
-  const len = binaryStr.length;
-  
-    const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryStr.charCodeAt(i);
-  }
-  
-  const t1 = performance.now();
-  const result = new Float32Array(bytes.buffer);
-  console.log("[DEBUG-b64] decoded " + (len / 1048576).toFixed(2) + " MB in " + (t1 - t0).toFixed(1) + " ms");
-  
-  return result;
-}
-
 // ============== 全局状态封装 ==============
 const SpatialState = {
   isCapturing: false,
@@ -2102,64 +2076,54 @@ async function fetchNextFrame() {
       }
     }
     
-    // ✅ 从 API 获取点云数据
-    const pointCloudResult = await pointCloudResponse.json();
-    if (pointCloudResult.success) {
-      const { points_b64, colors_b64, confs_b64, total_points } = pointCloudResult;
-      const numVertices = total_points;
-      
-      // 解码 Base64 编码的数据
-      const flatPositions = base64ToFloat32Array(points_b64);
-      const flatColorsArr = colors_b64 ? base64ToFloat32Array(colors_b64) : new Float32Array(numVertices * 3).fill(0.5);
-      const flatConfsArr = confs_b64 ? base64ToFloat32Array(confs_b64) : new Float32Array(numVertices).fill(1.0);
-      
+    // ✅ 从 API 获取点云数据（二进制格式）
+    const buf = await pointCloudResponse.arrayBuffer();
+    const n = new DataView(buf).getUint32(0, true);
+    const numVertices = n;
 
-      
-      framePointClouds[currentFetchFrame] = {
-        positions: flatPositions,
-        colors: flatColorsArr,
-        confs: flatConfsArr
-      };
-      
-      addFramePointCloudToScene(currentFetchFrame);
-      framePointClouds[currentFetchFrame] = null; // free raw data after accumulation
-      if (typeof performance.memory !== "undefined") {
-        console.log("[DEBUG-mem] usedJSHeapSize=" + (performance.memory.usedJSHeapSize / 1048576).toFixed(1) + " MB, totalJSHeapSize=" + (performance.memory.totalJSHeapSize / 1048576).toFixed(1) + " MB");
-      }
-      
-      try {
-        updateTrajectoryAndFrustums();
-      } catch (e) {
-        console.warn('Camera frustum update failed for frame ' + currentFetchFrame + ': ' + e.message);
-      }
-      try {
-        updateCameraFollow(currentFetchFrame);
-      } catch (e) {
-        console.warn('Camera follow update failed:', e.message);
-      }
-      
-      var totalRenderedFrames = framePointsObjects.length;
-      addLog('帧 ' + currentFetchFrame + (totalFramesAvailable ? '/' + totalFramesAvailable : '') + ' 点云加载完成，共 ' + numVertices + ' 点，累计 ' + totalRenderedFrames + ' 帧', 'ok');
-      
-      currentFetchFrame++;
-      
-      const tFetch1 = performance.now();
-      console.log('[DEBUG-fetch] call #' + fetchCallId + ' frame ' + (currentFetchFrame - 1) + ' OK total=' + (tFetch1 - tFetch0).toFixed(0) + 'ms net=' + (tNet1 - tNet0).toFixed(0) + 'ms, accumCount=' + accumCount);
-      
-      // ✅ 流式模式：先检查状态再继续拉取，避免频繁请求
-      // 批量模式：立即继续拉取下一帧
-      if (isFetchingFrames) {
-        if (totalFramesAvailable) {
-          scheduleNextFetch(50);
-        } else {
-          // 流式模式：重新检查状态，等待新帧
-          scheduleNextFetch(100);
-        }
-      }
-    } else {
-      addLog('帧 ' + currentFetchFrame + ' API 响应不成功', 'info');
-      currentFetchFrame++;
-      if (isFetchingFrames) {
+    const flatPositions = new Float32Array(buf, 4, n * 3);
+    const flatColorsArr = new Float32Array(buf, 4 + n * 12, n * 3);
+    const flatConfsArr = new Float32Array(buf, 4 + n * 24, n);
+
+
+    framePointClouds[currentFetchFrame] = {
+      positions: flatPositions,
+      colors: flatColorsArr,
+      confs: flatConfsArr
+    };
+
+    addFramePointCloudToScene(currentFetchFrame);
+    framePointClouds[currentFetchFrame] = null; // free raw data after accumulation
+    if (typeof performance.memory !== "undefined") {
+      console.log("[DEBUG-mem] usedJSHeapSize=" + (performance.memory.usedJSHeapSize / 1048576).toFixed(1) + " MB, totalJSHeapSize=" + (performance.memory.totalJSHeapSize / 1048576).toFixed(1) + " MB");
+    }
+
+    try {
+      updateTrajectoryAndFrustums();
+    } catch (e) {
+      console.warn('Camera frustum update failed for frame ' + currentFetchFrame + ': ' + e.message);
+    }
+    try {
+      updateCameraFollow(currentFetchFrame);
+    } catch (e) {
+      console.warn('Camera follow update failed:', e.message);
+    }
+
+    var totalRenderedFrames = framePointsObjects.length;
+    addLog('帧 ' + currentFetchFrame + (totalFramesAvailable ? '/' + totalFramesAvailable : '') + ' 点云加载完成，共 ' + numVertices + ' 点，累计 ' + totalRenderedFrames + ' 帧', 'ok');
+
+    currentFetchFrame++;
+
+    const tFetch1 = performance.now();
+    console.log('[DEBUG-fetch] call #' + fetchCallId + ' frame ' + (currentFetchFrame - 1) + ' OK total=' + (tFetch1 - tFetch0).toFixed(0) + 'ms net=' + (tNet1 - tNet0).toFixed(0) + 'ms, accumCount=' + accumCount);
+
+    // ✅ 流式模式：先检查状态再继续拉取，避免频繁请求
+    // 批量模式：立即继续拉取下一帧
+    if (isFetchingFrames) {
+      if (totalFramesAvailable) {
+        scheduleNextFetch(50);
+      } else {
+        // 流式模式：重新检查状态，等待新帧
         scheduleNextFetch(100);
       }
     }

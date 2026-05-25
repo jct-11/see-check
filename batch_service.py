@@ -28,7 +28,7 @@ import threading
 import shutil
 from pathlib import Path
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -937,20 +937,10 @@ async def get_frame_point_cloud(batch_id: str, frame_index: int):
     if len(points_arr) == 0:
         raise HTTPException(status_code=404, detail=f"帧 {frame_index} 无有效点云数据")
     
-    # 使用 Base64 编码传输，减少数据量
-    import base64
-    
-    return {
-        "success": True,
-        "batch_id": batch_id,
-        "frame_index": frame_index,
-        "points_b64": base64.b64encode(points_arr.flatten()).decode('utf-8'),
-        "colors_b64": base64.b64encode(colors_arr.flatten()).decode('utf-8'),
-        "confs_b64": base64.b64encode(confs_arr.flatten()).decode('utf-8'),
-        "total_points": len(points_arr),
-        "source": "memory",
-        "encoding": "base64"
-    }
+    # 二进制编码传输（无 base64 膨胀）
+    n = np.uint32(len(points_arr))
+    buf = n.tobytes() + points_arr.tobytes() + colors_arr.tobytes() + confs_arr.tobytes()
+    return Response(content=buf, media_type="application/octet-stream")
 
 @app.get("/batch/{batch_id}/frame/{frame_index}/camera")
 async def get_frame_camera(batch_id: str, frame_index: int):
