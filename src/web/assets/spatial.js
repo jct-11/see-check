@@ -2330,7 +2330,7 @@ function initApiAndVisualizer() {
         var vlEl = document.getElementById('dgsgViewerLink');
         if (dsEl) dsEl.style.display = 'block';
         if (dtEl) dtEl.textContent = '✅ 3D 场景已就绪！';
-        if (vlEl) { vlEl.style.display = 'inline'; vlEl.href = 'http://localhost:5001'; }
+        if (vlEl) { vlEl.style.display = 'inline'; vlEl.href = 'http://192.168.0.200:5001'; }
       } else if (status.dgsg_status === 'error') {
         var dsEl = document.getElementById('dgsgStatus');
         var dtEl = document.getElementById('dgsgStatusText');
