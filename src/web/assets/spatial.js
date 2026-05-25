@@ -2066,6 +2066,10 @@ async function fetchNextFrame() {
     // ✅ 从 API 获取点云数据（二进制格式）
     const buf = await pointCloudResponse.arrayBuffer();
     const n = new DataView(buf).getUint32(0, true);
+    // 校验二进制格式：n 必须 >0 且字节数必须匹配 [N:u32][pos:N*3*f32][col:N*3*f32][conf:N*f32]
+    if (n <= 0 || n * 28 + 4 !== buf.byteLength || n > 5000000) {
+      throw new Error('Invalid point cloud binary: n=' + n + ', byteLength=' + buf.byteLength);
+    }
     const numVertices = n;
 
     const flatPositions = new Float32Array(buf, 4, n * 3);
