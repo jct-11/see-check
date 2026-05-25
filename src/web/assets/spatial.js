@@ -1432,8 +1432,8 @@ function addFramePointCloudToScene(frameIndex) {
 
   // Create per-frame Points object — no merging, no GPU re-upload of old data
   const geom = new THREE.BufferGeometry();
-  geom.setAttribute("position", new THREE.BufferAttribute(filteredPos.slice(0, count * 3), 3));
-  geom.setAttribute("color", new THREE.BufferAttribute(filteredCol.slice(0, count * 3), 3));
+  geom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(filteredPos.buffer, 0, count * 3), 3));
+  geom.setAttribute("color", new THREE.BufferAttribute(new Float32Array(filteredCol.buffer, 0, count * 3), 3));
   geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Infinity);
 
   if (!sharedPointMaterial) {

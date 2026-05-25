@@ -113,9 +113,9 @@ def add_to_frame_cache(frame_idx, points, colors, confs, camera):
     global frame_cache, cache_frame_order
     
     frame_cache[frame_idx] = {
-        "points": points.tolist(),
-        "colors": colors.tolist(),
-        "confs": confs.tolist(),
+        "points": np.asarray(points, dtype=np.float32),
+        "colors": np.asarray(colors, dtype=np.float32),
+        "confs": np.asarray(confs, dtype=np.float32),
         "camera": camera,
     }
     cache_frame_order.append(frame_idx)
@@ -905,7 +905,7 @@ async def get_metadata(batch_id: str):
     # 计算场景中心和尺度（从缓存的点云计算）
     all_points = []
     for frame_idx in frame_cache:
-        points = np.array(frame_cache[frame_idx]["points"])
+        points = np.asarray(frame_cache[frame_idx]["points"])
         all_points.append(points)
     
     if all_points:
@@ -938,9 +938,9 @@ async def get_frame_point_cloud(batch_id: str, frame_index: int):
     cached = frame_cache[frame_index]
     
     # 返回原始数据（与 live_camera.py 一致，不过滤）
-    points_arr = np.array(cached["points"], dtype=np.float32)
-    colors_arr = np.array(cached["colors"], dtype=np.float32)
-    confs_arr = np.array(cached["confs"], dtype=np.float32)
+    points_arr = np.asarray(cached["points"], dtype=np.float32)
+    colors_arr = np.asarray(cached["colors"], dtype=np.float32)
+    confs_arr = np.asarray(cached["confs"], dtype=np.float32)
     
     if len(points_arr) == 0:
         raise HTTPException(status_code=404, detail=f"帧 {frame_index} 无有效点云数据")
