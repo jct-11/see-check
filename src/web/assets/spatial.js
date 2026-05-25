@@ -1307,24 +1307,28 @@ async function switchViewMode(mode) {
   const btns = document.querySelectorAll('.mode-btn');
 
   if (mode === 'memory') {
-    if (!memorySceneLoaded) {
+    var firstLoad = !memorySceneLoaded;
+    if (firstLoad) {
       await loadMemoryPointCloud();
-      if (gen !== modeSwitchGen) return; // newer switch preempted us
+      if (gen !== modeSwitchGen) return;
       if (!memorySceneLoaded) return;
     }
 
     if (spatialUI) spatialUI.style.display = 'none';
     cameraFollowEnabled = false;
-    camera3d.up.set(0, 1, 0); // reset up vector (follow mode may have flipped it)
+    camera3d.up.set(0, 1, 0);
 
-    const cx = memorySceneCenter[0], cy = memorySceneCenter[1], cz = memorySceneCenter[2];
-    const r = Math.max(memorySceneScale * 1.2, 3.0);
-    const dist = r * 1.8;
-    camera3d.position.set(cx + dist * 0.6, cy + dist * 0.8, cz + dist * 0.8);
-    camera3d.lookAt(cx, cy, cz);
-    if (currentEuler) {
-      currentEuler.setFromQuaternion(camera3d.quaternion, 'YXZ');
-      targetEuler.copy(currentEuler);
+    // 只在首次加载时重置视角，后续切换保持当前位置
+    if (firstLoad) {
+      const cx = memorySceneCenter[0], cy = memorySceneCenter[1], cz = memorySceneCenter[2];
+      const r = Math.max(memorySceneScale * 1.2, 3.0);
+      const dist = r * 1.8;
+      camera3d.position.set(cx + dist * 0.6, cy + dist * 0.8, cz + dist * 0.8);
+      camera3d.lookAt(cx, cy, cz);
+      if (currentEuler) {
+        currentEuler.setFromQuaternion(camera3d.quaternion, 'YXZ');
+        targetEuler.copy(currentEuler);
+      }
     }
 
     viewMode = 'memory';

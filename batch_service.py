@@ -670,6 +670,7 @@ async def start_inference(batch_id: str, body: dict):
     }
     
     frame_cache.clear()
+    cache_frame_order.clear()
     batch_logs.clear()
     
     # 清理KV缓存，准备新批次
