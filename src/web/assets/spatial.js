@@ -637,7 +637,7 @@ async function uploadFramesToBatchServer(batchId, frames) {
   
   frames.forEach((blob, index) => {
     const frameNum = spatialFrameCounter - frames.length + index;
-    formData.append('files', blob, `frame_${String(frameNum).padStart(3, '0')}.jpg`);
+    formData.append('files', blob, `frame_${String(frameNum).padStart(6, '0')}.jpg`);
   });
   
   try {

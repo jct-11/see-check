@@ -720,8 +720,8 @@ async def upload_frames(batch_id: str, files: list[UploadFile] = File(...)):
         
         frame_data = await file.read()
         frame_index = existing_frames + i
-        frame_path = frames_dir / f"frame_{frame_index:03d}.jpg"
-        
+        frame_path = frames_dir / f"frame_{frame_index:06d}.jpg"
+
         with open(frame_path, 'wb') as f:
             f.write(frame_data)
         
@@ -971,7 +971,7 @@ async def get_frame_image(batch_id: str, frame_index: int):
     batch_dir = DATA_DIR / batch_id
     frames_dir = batch_dir / "frames"
     
-    image_path = frames_dir / f"frame_{frame_index:03d}.jpg"
+    image_path = frames_dir / f"frame_{frame_index:06d}.jpg"
     if not image_path.exists():
         raise HTTPException(status_code=404, detail=f"帧 {frame_index} 图片不存在")
     
