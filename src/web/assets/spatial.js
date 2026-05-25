@@ -2269,12 +2269,12 @@ function initApiAndVisualizer() {
         var dsEl = document.getElementById('dgsgStatus');
         var dtEl = document.getElementById('dgsgStatusText');
         if (dsEl) dsEl.style.display = 'block';
-        if (dtEl) dtEl.textContent = '正在标上语义...';
+        if (dtEl) dtEl.textContent = '正在添加语义';
       } else if (status.dgsg_status === 'done') {
         var dsEl = document.getElementById('dgsgStatus');
         var dtEl = document.getElementById('dgsgStatusText');
         if (dsEl) dsEl.style.display = 'block';
-        if (dtEl) dtEl.textContent = '语义已标上';
+        if (dtEl) dtEl.textContent = '语义添加完成';
       } else if (status.dgsg_status === 'error') {
         var dsEl = document.getElementById('dgsgStatus');
         var dtEl = document.getElementById('dgsgStatusText');
