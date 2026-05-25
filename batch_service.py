@@ -62,7 +62,7 @@ app.add_middleware(
 DATA_DIR = Path("/home/sscy/lingbot-map/stmem-main/data")
 MAX_FRAMES_PER_BATCH = 50000
 SUPPORTED_FORMATS = {"image/jpeg", "image/png", "image/webp"}
-MODEL_PATH = "/home/sscy/lingbot-map/lingbot-map-main/checkpoints/robbyant/lingbot-map/lingbot-map-long.pt"
+MODEL_PATH = "checkpoints/robbyant/lingbot-map/lingbot-map/lingbot-map-long.pt"
 
 # 推理参数
 IMAGE_SIZE = 518
