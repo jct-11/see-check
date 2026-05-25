@@ -88,13 +88,22 @@ DEPTH_COUNT=$(ls "${OUTPUT_DIR}/depth/" 2>/dev/null | wc -l)
 POSES_COUNT=$(ls "${OUTPUT_DIR}/poses/" 2>/dev/null | wc -l)
 echo "📊 数据统计: rgb=${RGB_COUNT}, depth=${DEPTH_COUNT}, poses=${POSES_COUNT}"
 
-if [ "${RGB_COUNT}" -ne "${DEPTH_COUNT}" ] || [ "${RGB_COUNT}" -ne "${POSES_COUNT}" ]; then
-    echo "❌ 数据数量不匹配！rgb=${RGB_COUNT}, depth=${DEPTH_COUNT}, poses=${POSES_COUNT}"
-    echo "   通常是因为前端采集图片数超过了设定目标数"
-    echo "   请减少 FPS 设置或增加目标图片数后重试"
-    exit 1
+# ── 限制 rgb 数量与 depth/poses 一致（前端可能多采几帧）──
+TARGET_COUNT="${DEPTH_COUNT}"
+if [ "${POSES_COUNT}" -lt "${TARGET_COUNT}" ]; then
+    TARGET_COUNT="${POSES_COUNT}"
 fi
-echo "✓ 数据数量一致: ${RGB_COUNT} 帧"
+
+if [ "${RGB_COUNT}" -gt "${TARGET_COUNT}" ]; then
+    echo "⚠️  rgb 图片数(${RGB_COUNT})多于 depth(${DEPTH_COUNT})/poses(${POSES_COUNT})，裁剪为 ${TARGET_COUNT} 帧"
+    EXTRA=$((RGB_COUNT - TARGET_COUNT))
+    # 删除多余的 rgb 文件（按文件名排序，删除最后的）
+    ls "${OUTPUT_DIR}/rgb/" | sort | tail -n "${EXTRA}" | while read f; do
+        rm -f "${OUTPUT_DIR}/rgb/${f}"
+    done
+    RGB_COUNT=$(ls "${OUTPUT_DIR}/rgb/" 2>/dev/null | wc -l)
+fi
+echo "✓ 数据就绪: rgb=${RGB_COUNT}, depth=${DEPTH_COUNT}, poses=${POSES_COUNT}"
 
 # 读取 batch 的 intrinsics.json 生成 intrinsics.yaml
 python3 - "${BATCH_ID}" "${OUTPUT_DIR}" <<'PYEOF'

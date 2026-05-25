@@ -2280,6 +2280,11 @@ function initApiAndVisualizer() {
         var dtEl = document.getElementById('dgsgStatusText');
         if (dsEl) dsEl.style.display = 'block';
         if (dtEl) dtEl.textContent = '语义标定失败';
+      } else {
+        var dsEl = document.getElementById('dgsgStatus');
+        var dtEl = document.getElementById('dgsgStatusText');
+        if (dsEl) dsEl.style.display = 'block';
+        if (dtEl) dtEl.textContent = '正在等待点云';
       }
       if (status.processing !== undefined) {
         var procEl = document.getElementById('stepProcessingStatus');
