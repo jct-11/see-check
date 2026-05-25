@@ -371,6 +371,13 @@ def on_frame_callback(frame_idx, image_np, frame_output):
                         "h": orig_h,
                     }, f)
 
+            # ── 保存 point (置信度过滤后导出 npy) ──
+            point_dir = batch_dir / "point"
+            point_dir.mkdir(exist_ok=True)
+            wp_filtered = _wp.copy()
+            wp_filtered[_depth_conf_np < CONF_THRESHOLD] = 0.0
+            np.save(str(point_dir / f"frame_{frame_idx:06d}.npy"), wp_filtered.astype(np.float32))
+
         add_to_frame_cache(frame_idx, pred_pts, color_flat, conf_flat, camera)
 
         processed = len(frame_cache)

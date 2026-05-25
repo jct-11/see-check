@@ -61,7 +61,7 @@ echo "✓ Python 环境: ${DGSG_PYTHON}"
 # ── 1. 转格式：拷贝数据 + 生成 intrinsics.yaml ──
 echo "📦 转换数据格式: ${BATCH_ID} → ${SCENE_NAME}"
 
-mkdir -p "${OUTPUT_DIR}/rgb" "${OUTPUT_DIR}/depth" "${OUTPUT_DIR}/poses"
+mkdir -p "${OUTPUT_DIR}/rgb" "${OUTPUT_DIR}/depth" "${OUTPUT_DIR}/poses" "${OUTPUT_DIR}/point"
 
 # 拷贝 frames → rgb
 cp "${BATCH_DIR}/frames"/* "${OUTPUT_DIR}/rgb/" 2>/dev/null || true
@@ -82,11 +82,19 @@ else
     exit 1
 fi
 
+# 拷贝 point
+if [ -d "${BATCH_DIR}/point" ]; then
+    cp "${BATCH_DIR}/point"/* "${OUTPUT_DIR}/point/" 2>/dev/null || true
+else
+    echo "⚠️  没有 point 数据，跳过"
+fi
+
 # ── 验证 rgb/depth/poses 数量一致 ──
 RGB_COUNT=$(ls "${OUTPUT_DIR}/rgb/" 2>/dev/null | wc -l)
 DEPTH_COUNT=$(ls "${OUTPUT_DIR}/depth/" 2>/dev/null | wc -l)
 POSES_COUNT=$(ls "${OUTPUT_DIR}/poses/" 2>/dev/null | wc -l)
-echo "📊 数据统计: rgb=${RGB_COUNT}, depth=${DEPTH_COUNT}, poses=${POSES_COUNT}"
+POINT_COUNT=$(ls "${OUTPUT_DIR}/point/" 2>/dev/null | wc -l)
+echo "📊 数据统计: rgb=${RGB_COUNT}, depth=${DEPTH_COUNT}, poses=${POSES_COUNT}, point=${POINT_COUNT}"
 
 # ── 限制 rgb 数量与 depth/poses 一致（前端可能多采几帧）──
 TARGET_COUNT="${DEPTH_COUNT}"
