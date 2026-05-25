@@ -473,7 +473,7 @@ var captureCurrentFrame = null;
 /**
  * 设置帧采集函数
  * 由外部模块注入实际采集帧的逻辑（通常是从摄像头或视频流获取图像）
- * @param {Function} func - 帧采集函数，返回包含image字段（base64编码）的对象
+ * @param {Function} func - 帧采集函数，返回 {blob, width, height}
  */
 function setCaptureFrameFunc(func) {
   captureCurrentFrame = func;
@@ -626,7 +626,7 @@ async function checkBatchServerStatus() {
  * 上传帧到批次服务
  * 将采集的图像帧批量上传到RTX3090服务器进行3D重建
  * @param {string} batchId - 批次号
- * @param {string[]} frames - base64编码的图像数组
+ * @param {Blob[]} frames - 图像 Blob 数组
  * @returns {Promise<Object>} 上传结果 {success, totalUploaded, message}
  */
 async function uploadFramesToBatchServer(batchId, frames) {
@@ -688,19 +688,6 @@ async function getBatchPointCloud(batchId) {
     console.warn('[Spatial API] 获取点云失败:', err.message);
     return null;
   }
-}
-
-/**
- * Base64 转 Blob
- */
-function base64ToBlob(base64, mimeType) {
-  const byteString = atob(base64.split(',')[1] || base64);
-  const ab = new ArrayBuffer(byteString.length);
-  const ia = new Uint8Array(ab);
-  for (let i = 0; i < byteString.length; i++) {
-    ia[i] = byteString.charCodeAt(i);
-  }
-  return new Blob([ab], { type: mimeType });
 }
 
 // ============== API 模块导出 ==============
@@ -2418,16 +2405,6 @@ async function switchToLocalCamera() {
 const CANVAS_POOL_SIZE = 4;  // supports up to ~20fps (4 × 50ms encode = 200ms window)
 let _canvasPool = [];         // [{canvas, ctx, busy}]
 let _poolIdx = 0;
-
-// Helper: convert Blob to base64 (async via FileReader, off main thread)
-function _blobToBase64(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result.split(",")[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-}
 
 function _ensureCanvasPool() {
   if (_canvasPool.length > 0) return;
