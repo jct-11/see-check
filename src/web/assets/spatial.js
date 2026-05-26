@@ -1373,7 +1373,7 @@ function makeRingSprite() {
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.minFilter = THREE.LinearFilter;
-  const spriteMat = new THREE.SpriteMaterial({ map: texture, depthTest: true, depthWrite: false });
+  const spriteMat = new THREE.SpriteMaterial({ map: texture, depthTest: false, depthWrite: false });
   return new THREE.Sprite(spriteMat);
 }
 
