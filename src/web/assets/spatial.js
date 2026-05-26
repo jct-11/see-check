@@ -1243,7 +1243,9 @@ async function loadMemoryPointCloud() {
 
     const positions = new Float32Array(buf, OFFSET_POS, N * 3);
     const colors = new Float32Array(buf, OFFSET_COL, N * 3);
-    const objIdx = new Uint16Array(buf, OFFSET_IDX, N);
+    const idxLen = Math.min(N, Math.floor((buf.byteLength - OFFSET_IDX) / 2));
+    if (idxLen <= 0) throw new Error('idx section overflow: buf=' + buf.byteLength + ' offset=' + OFFSET_IDX);
+    const objIdx = new Uint16Array(buf, OFFSET_IDX, idxLen);
 
     const parseMs = (performance.now() - tParse).toFixed(0);
     console.log('[Memory] parsed ' + N + ' points in ' + parseMs + 'ms');
@@ -1391,7 +1393,8 @@ async function loadMemoryLabels(objIdx, positions, N) {
     const tCentroid = performance.now();
     const nodeMap = {};
     let bgCount = 0;
-    for (let i = 0; i < N; i++) {
+    const labelN = Math.min(N, objIdx.length);
+    for (let i = 0; i < labelN; i++) {
       const oid = objIdx[i];
       if (oid === 0) { bgCount++; continue; }
       if (!nodeMap[oid]) nodeMap[oid] = { sx: 0, sy: 0, sz: 0, count: 0 };
