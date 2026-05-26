@@ -976,7 +976,7 @@ function onFlightMouseUp(e) {
 }
 
 // ── Memory ring click → highlight interaction ──
-const HIGHLIGHT_COLOR = [1.0, 0.427, 0.0]; // orange #ff6d00
+const HIGHLIGHT_COLOR = [0.55, 0.0, 0.85]; // deep purple
 
 function onMemoryRingClick(e) {
   if (!memoryActive || memoryRingSprites.length === 0) return;
@@ -1956,14 +1956,12 @@ function disposeObject(obj) {
   if (!obj) return;
   if (obj.geometry) {
     obj.geometry.dispose();
-    for (const attr in obj.geometry.attributes) {
-      if (obj.geometry.attributes[attr]) obj.geometry.attributes[attr].dispose();
-    }
   }
   if (obj.material) {
     if (Array.isArray(obj.material)) {
       obj.material.forEach(m => m.dispose());
     } else {
+      if (obj.material.map) obj.material.map.dispose();
       obj.material.dispose();
     }
   }
