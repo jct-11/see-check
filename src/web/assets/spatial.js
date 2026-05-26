@@ -1530,7 +1530,7 @@ function animate() {
 
   // Keep ring markers at constant screen size
   if (memoryActive && memoryRingSprites.length > 0) {
-    const RING_PX = 16; // target screen radius in pixels
+    const RING_PX = 80; // target screen radius in pixels
     const halfH = renderer.domElement.height / 2;
     const fovRad = camera3d.fov * Math.PI / 360;
     const screenFactor = RING_PX * Math.tan(fovRad) / halfH;
