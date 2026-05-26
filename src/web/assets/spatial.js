@@ -976,7 +976,14 @@ function onFlightMouseUp(e) {
 }
 
 // ── Memory ring click → highlight interaction ──
-const HIGHLIGHT_COLOR = [0.55, 0.0, 0.85]; // deep purple
+const GOLDEN_RATIO = 0.618033988749895;
+let _nextHighlightHue = Math.random();
+
+function _nextHighlightColor() {
+  _nextHighlightHue = (_nextHighlightHue + GOLDEN_RATIO) % 1;
+  const rgb = new THREE.Color().setHSL(_nextHighlightHue, 0.7, 0.55);
+  return [rgb.r, rgb.g, rgb.b];
+}
 
 function onMemoryRingClick(e) {
   if (!memoryActive || memoryRingSprites.length === 0) return;
@@ -1005,20 +1012,19 @@ function onMemoryRingClick(e) {
 
 function _toggleObjectSelection(idx, category, cx, cy, cz) {
   if (selectedObjects.has(idx)) {
-    // Deselect
     const entry = selectedObjects.get(idx);
     if (entry.labelSprite) { memoryScene.remove(entry.labelSprite); disposeObject(entry.labelSprite); }
     selectedObjects.delete(idx);
     _restoreObjectColors(idx);
     console.log('[Memory] Deselected: ' + category + ' (idx=' + idx + ')');
   } else {
-    // Select — highlight points + show label
-    _highlightObjectPoints(idx);
+    const color = _nextHighlightColor();
+    _highlightObjectPoints(idx, color);
     const label = makeClickLabelSprite(category);
     label.position.set(cx, cy + 0.25, cz);
     label.scale.set(0.2, 0.07, 1);
     memoryScene.add(label);
-    selectedObjects.set(idx, { category, cx, cy, cz, labelSprite: label });
+    selectedObjects.set(idx, { category, cx, cy, cz, labelSprite: label, color: color });
     console.log('[Memory] Selected: ' + category + ' (idx=' + idx + ')');
   }
 }
@@ -1033,7 +1039,7 @@ function _deselectAllObjects() {
   console.log('[Memory] All deselected');
 }
 
-function _highlightObjectPoints(targetIdx) {
+function _highlightObjectPoints(targetIdx, color) {
   if (!memoryPointCloud || !memoryObjIdx || !memoryOriginalColors) return;
   const colorAttr = memoryPointCloud.geometry.attributes.color;
   if (!colorAttr) return;
@@ -1043,9 +1049,9 @@ function _highlightObjectPoints(targetIdx) {
   for (let i = 0; i < N; i++) {
     if (memoryObjIdx[i] === targetIdx) {
       const i3 = i * 3;
-      colors[i3] = HIGHLIGHT_COLOR[0];
-      colors[i3 + 1] = HIGHLIGHT_COLOR[1];
-      colors[i3 + 2] = HIGHLIGHT_COLOR[2];
+      colors[i3] = color[0];
+      colors[i3 + 1] = color[1];
+      colors[i3 + 2] = color[2];
       matched++;
     }
   }
@@ -1350,17 +1356,19 @@ function makeClickLabelSprite(text) {
 
 function makeRingSprite() {
   const canvas = document.createElement('canvas');
-  canvas.width = 32;
-  canvas.height = 32;
+  canvas.width = 48;
+  canvas.height = 48;
   const ctx = canvas.getContext('2d');
+  // Solid ring — no transparency
   ctx.beginPath();
-  ctx.arc(16, 16, 7, 0, Math.PI * 2);
-  ctx.strokeStyle = 'rgba(130, 40, 180, 0.9)';
-  ctx.lineWidth = 2.5;
+  ctx.arc(24, 24, 10, 0, Math.PI * 2);
+  ctx.strokeStyle = '#6414A0';
+  ctx.lineWidth = 3;
   ctx.stroke();
+  // Solid center dot
   ctx.beginPath();
-  ctx.arc(16, 16, 3, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(140, 30, 190, 0.95)';
+  ctx.arc(24, 24, 4, 0, Math.PI * 2);
+  ctx.fillStyle = '#6414A0';
   ctx.fill();
 
   const texture = new THREE.CanvasTexture(canvas);
@@ -1518,6 +1526,19 @@ function animate() {
     updateReset(delta);
     updateCameraRotation(delta);
     updateFlightMovement(delta);
+  }
+
+  // Keep ring markers at constant screen size
+  if (memoryActive && memoryRingSprites.length > 0) {
+    const RING_PX = 16; // target screen radius in pixels
+    const halfH = renderer.domElement.height / 2;
+    const fovRad = camera3d.fov * Math.PI / 360;
+    const screenFactor = RING_PX * Math.tan(fovRad) / halfH;
+    for (const ring of memoryRingSprites) {
+      const dist = camera3d.position.distanceTo(ring.position);
+      const s = screenFactor * dist;
+      ring.scale.set(s, s, 1);
+    }
   }
 
   const activeScene = memoryActive ? memoryScene : scene;

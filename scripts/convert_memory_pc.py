@@ -66,7 +66,10 @@ def main():
         traceback.print_exc()
         sys.exit(1)
 
-    n = len(means3D)
+    n = min(len(means3D), len(rgb_colors), len(object_idx))
+    means3D = means3D[:n]
+    rgb_colors = rgb_colors[:n]
+    object_idx = object_idx[:n]
     load_ms = (time.time() - t_load) * 1000
     unique_ids = len(set(int(x) for x in object_idx[:10000]))  # sample first 10k
     log(f"loaded {n} points, ~{unique_ids} unique object IDs (sampled), load_time={load_ms:.0f}ms")
