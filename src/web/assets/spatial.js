@@ -792,7 +792,10 @@ let cameraFollowEnabled = false;
 let cameraFollowDistance = 0.8;
 let followSmoothedPos = null;
 let followLookTarget = null;
-const FOLLOW_SMOOTH = 0.4;
+let _followTargetPos = null;
+let _followTargetLook = null;
+let _lastFollowTime = 0;
+const FOLLOW_RATE = 10; // higher = more responsive (1/s)
 
 // Data fetching state
 let fetchBatchId = null;
@@ -1527,11 +1530,22 @@ function animate() {
   // Delta time for damping (capped to 100ms to prevent jumps)
   const delta = Math.min((now - lastRenderTime) / 1000, 0.1);
 
-  // Camera follow (OpenCV y-down -> flip camera up)
+  // Camera follow (delta-time smoothing + quaternion slerp)
   if (!memoryActive && cameraFollowEnabled && followSmoothedPos && followLookTarget) {
+    const nowSec = now / 1000;
+    const followDt = Math.min(nowSec - _lastFollowTime, 0.2);
+    _lastFollowTime = nowSec;
+    const factor = 1 - Math.exp(-FOLLOW_RATE * followDt);
+
+    if (_followTargetPos) followSmoothedPos.lerp(_followTargetPos, factor);
+    if (_followTargetLook) followLookTarget.lerp(_followTargetLook, factor);
+
     camera3d.position.copy(followSmoothedPos);
+    const targetMat = new THREE.Matrix4().lookAt(followSmoothedPos, followLookTarget, new THREE.Vector3(0, -1, 0));
+    const targetQuat = new THREE.Quaternion().setFromRotationMatrix(targetMat);
+    camera3d.quaternion.slerp(targetQuat, factor);
     camera3d.up.set(0, -1, 0);
-    camera3d.lookAt(followLookTarget);
+
     if (currentEuler && targetEuler) {
       currentEuler.setFromQuaternion(camera3d.quaternion, 'YXZ');
       targetEuler.copy(currentEuler);
@@ -1789,6 +1803,9 @@ function enableCameraFollow() {
   cameraFollowEnabled = true;
   followSmoothedPos = null;
   followLookTarget = null;
+  _followTargetPos = null;
+  _followTargetLook = null;
+  _lastFollowTime = 0;
   currentFollowFrameIndex = -1;
   if (camera3d && currentEuler && targetEuler) { currentEuler.setFromQuaternion(camera3d.quaternion, 'YXZ'); targetEuler.copy(currentEuler); }
 }
@@ -1804,6 +1821,9 @@ function disableCameraFollow() {
   cameraFollowEnabled = false;
   followSmoothedPos = null;
   followLookTarget = null;
+  _followTargetPos = null;
+  _followTargetLook = null;
+  _lastFollowTime = 0;
   currentFollowFrameIndex = -1;
   const imgEl = document.getElementById("frameImagePreview");
   const labelEl = document.getElementById("frameImageLabel");
@@ -1835,13 +1855,13 @@ function updateCameraFollow(frameIndex) {
     // Look at a point ahead of the tracked camera
     const lookTarget = camPos.clone().addScaledVector(forward, 2.0);
 
-    // Smooth follow
+    // Store raw targets — smoothing happens in animate()
+    _followTargetPos = viewPos;
+    _followTargetLook = lookTarget;
     if (!followSmoothedPos) {
       followSmoothedPos = viewPos.clone();
       followLookTarget = lookTarget.clone();
-    } else {
-      followSmoothedPos.lerp(viewPos, FOLLOW_SMOOTH);
-      followLookTarget.lerp(lookTarget, FOLLOW_SMOOTH);
+      _lastFollowTime = performance.now() / 1000;
     }
 
     if (currentFollowFrameIndex !== frameIndex) {
@@ -2833,10 +2853,11 @@ async function forceStopProcessing() {
   if (imgEl) imgEl.src = '';
   if (labelEl) labelEl.style.display = 'none';
   
-  // handled by followSmoothedPos in new module
-  // handled by followLookTarget in new module
   followSmoothedPos = null;
   followLookTarget = null;
+  _followTargetPos = null;
+  _followTargetLook = null;
+  _lastFollowTime = 0;
   currentFollowFrameIndex = -1;
   if (camera3d && currentEuler && targetEuler) { currentEuler.setFromQuaternion(camera3d.quaternion, 'YXZ'); targetEuler.copy(currentEuler); }
   
