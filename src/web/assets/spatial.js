@@ -1001,8 +1001,22 @@ function onMemoryRingClick(e) {
   const raycaster = new THREE.Raycaster();
   raycaster.setFromCamera(mouse, camera3d);
   const hits = raycaster.intersectObjects(memoryRingSprites);
+  let ring = null;
   if (hits.length > 0) {
-    const ring = hits[0].object;
+    ring = hits[0].object;
+  } else {
+    // Fallback: check distance from ray to each ring (2x visual radius)
+    const clickRay = raycaster.ray;
+    let bestDist = Infinity;
+    for (const r of memoryRingSprites) {
+      const dist = clickRay.distanceToPoint(r.position);
+      if (dist < r.scale.x && dist < bestDist) {
+        bestDist = dist;
+        ring = r;
+      }
+    }
+  }
+  if (ring) {
     const { idx, category, cx, cy, cz } = ring.userData;
     _toggleObjectSelection(idx, category, cx, cy, cz);
   } else {
