@@ -726,6 +726,8 @@ let memorySceneLoaded = false;
 let memorySceneLoading = false;
 let memoryPointCloud = null;
 let memoryLabelSprites = [];
+let memoryDots = null;
+let memoryConnectors = null;
 let memorySceneGraph = null;
 let memorySceneCenter = [0, 0, 0];
 let memorySceneScale = 1.0;
@@ -1227,6 +1229,12 @@ function makeTextSprite(text) {
 }
 
 async function loadMemoryLabels(objIdx, positions, N) {
+  // Clean up previous labels/dots/lines if re-loading
+  memoryLabelSprites.forEach(s => memoryScene.remove(s));
+  memoryLabelSprites = [];
+  if (memoryDots) { memoryScene.remove(memoryDots); disposeObject(memoryDots); memoryDots = null; }
+  if (memoryConnectors) { memoryScene.remove(memoryConnectors); disposeObject(memoryConnectors); memoryConnectors = null; }
+
   try {
     const tLabel = performance.now();
 
@@ -1257,10 +1265,15 @@ async function loadMemoryLabels(objIdx, positions, N) {
     const objCount = Object.keys(nodeMap).length;
     console.log('[Memory] centroid computed: ' + objCount + ' objects (bg=' + bgCount + '), ' + centroidMs + 'ms');
 
-    // Create sprite labels
+    // Build dots + lines + sprites
     const tSprites = performance.now();
+    const LABEL_Y_OFFSET = 0.2;
     let createdCount = 0;
     let fallbackCount = 0;
+
+    const dotPositions = [];
+    const lineVertices = [];
+
     for (const node of nodes) {
       if (node.idx == null) continue;
       const centroid = nodeMap[node.idx];
@@ -1279,11 +1292,42 @@ async function loadMemoryLabels(objIdx, positions, N) {
         console.log('[Memory] label "' + node.category + '" (idx=' + node.idx + ') using fallback center, point count=' + (centroid ? centroid.count : 0));
       }
 
+      dotPositions.push(cx, cy, cz);
+      lineVertices.push(cx, cy, cz, cx, cy + LABEL_Y_OFFSET, cz);
+
       const sprite = makeTextSprite(node.category || 'object');
-      sprite.position.set(cx, cy + 0.15, cz);
+      sprite.position.set(cx, cy + LABEL_Y_OFFSET, cz);
       sprite.scale.set(0.15, 0.05, 1);
       memoryScene.add(sprite);
       memoryLabelSprites.push(sprite);
+    }
+
+    // Blue dots — single Points object
+    if (dotPositions.length > 0) {
+      const dotGeom = new THREE.BufferGeometry();
+      dotGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(dotPositions), 3));
+      const dotMat = new THREE.PointsMaterial({
+        color: 0x448aff,
+        size: guiPointSize * 3,
+        sizeAttenuation: true,
+        depthTest: true,
+        depthWrite: false,
+      });
+      memoryDots = new THREE.Points(dotGeom, dotMat);
+      memoryScene.add(memoryDots);
+    }
+
+    // Thin connector lines — single LineSegments object
+    if (lineVertices.length > 0) {
+      const lineGeom = new THREE.BufferGeometry();
+      lineGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(lineVertices), 3));
+      const lineMat = new THREE.LineBasicMaterial({
+        color: 0x999999,
+        depthTest: true,
+        depthWrite: false,
+      });
+      memoryConnectors = new THREE.LineSegments(lineGeom, lineMat);
+      memoryScene.add(memoryConnectors);
     }
 
     const spriteMs = (performance.now() - tSprites).toFixed(0);
@@ -1331,9 +1375,6 @@ async function triggerSemanticReplacement() {
   memoryActive = true;
   cameraFollowEnabled = false;
   camera3d.up.set(0, 1, 0);
-
-  const spatialUI = document.getElementById('spatialModeUI');
-  if (spatialUI) spatialUI.style.display = 'none';
 
   updateStatus({ dgsg_status: 'replaced' });
   console.log('[Memory] Auto-replace complete — semantic point cloud active');
@@ -2524,11 +2565,10 @@ function startSpatialCapture() {
     }
     memoryLabelSprites.forEach(s => memoryScene.remove(s));
     memoryLabelSprites = [];
+    if (memoryDots) { memoryScene.remove(memoryDots); disposeObject(memoryDots); memoryDots = null; }
+    if (memoryConnectors) { memoryScene.remove(memoryConnectors); disposeObject(memoryConnectors); memoryConnectors = null; }
     memorySceneLoaded = false;
     memorySceneGraph = null;
-
-    const spatialUI = document.getElementById('spatialModeUI');
-    if (spatialUI) spatialUI.style.display = '';
 
     if (SpatialApi.startContinuousCapture) {
       SpatialApi.startContinuousCapture();
