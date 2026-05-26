@@ -1039,15 +1039,18 @@ function _highlightObjectPoints(targetIdx) {
   if (!colorAttr) return;
   const colors = colorAttr.array;
   const N = memoryObjIdx.length;
+  let matched = 0;
   for (let i = 0; i < N; i++) {
     if (memoryObjIdx[i] === targetIdx) {
       const i3 = i * 3;
       colors[i3] = HIGHLIGHT_COLOR[0];
       colors[i3 + 1] = HIGHLIGHT_COLOR[1];
       colors[i3 + 2] = HIGHLIGHT_COLOR[2];
+      matched++;
     }
   }
   colorAttr.needsUpdate = true;
+  console.log('[Memory] Highlighted ' + matched + ' / ' + N + ' points for idx=' + targetIdx);
 }
 
 function _restoreObjectColors(targetIdx) {
@@ -1352,12 +1355,12 @@ function makeRingSprite() {
   const ctx = canvas.getContext('2d');
   ctx.beginPath();
   ctx.arc(16, 16, 7, 0, Math.PI * 2);
-  ctx.strokeStyle = 'rgba(68, 138, 255, 0.85)';
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(130, 40, 180, 0.9)';
+  ctx.lineWidth = 2.5;
   ctx.stroke();
   ctx.beginPath();
-  ctx.arc(16, 16, 2.5, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(68, 138, 255, 0.9)';
+  ctx.arc(16, 16, 3, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(140, 30, 190, 0.95)';
   ctx.fill();
 
   const texture = new THREE.CanvasTexture(canvas);
