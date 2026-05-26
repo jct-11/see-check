@@ -1024,16 +1024,21 @@ function _toggleObjectSelection(idx, category, cx, cy, cz) {
     const entry = selectedObjects.get(idx);
     if (entry.labelSprite) { memoryScene.remove(entry.labelSprite); disposeObject(entry.labelSprite); }
     selectedObjects.delete(idx);
-    _restoreObjectColors(idx);
+    _applyHighlight();
     console.log('[Memory] Deselected: ' + category + ' (idx=' + idx + ')');
   } else {
-    _highlightObjectPoints(idx);
+    // Find the ring for this idx to get radius
+    let radius = 0.3;
+    for (const ring of memoryRingSprites) {
+      if (ring.userData.idx === idx) { radius = ring.userData.radius; break; }
+    }
     const label = makeClickLabelSprite(category);
     label.position.set(cx, cy + 0.25, cz);
     label.scale.set(0.2, 0.07, 1);
     memoryScene.add(label);
-    selectedObjects.set(idx, { category, cx, cy, cz, labelSprite: label });
-    console.log('[Memory] Selected: ' + category + ' (idx=' + idx + ')');
+    selectedObjects.set(idx, { category, cx, cy, cz, radius, labelSprite: label });
+    _applyHighlight();
+    console.log('[Memory] Selected: ' + category + ' (idx=' + idx + ', radius=' + radius.toFixed(2) + ')');
   }
 }
 
@@ -1041,49 +1046,69 @@ function _deselectAllObjects() {
   if (selectedObjects.size === 0) return;
   for (const [idx, entry] of selectedObjects) {
     if (entry.labelSprite) { memoryScene.remove(entry.labelSprite); disposeObject(entry.labelSprite); }
-    _restoreObjectColors(idx);
   }
   selectedObjects.clear();
+  _applyHighlight();
   console.log('[Memory] All deselected');
 }
 
-function _highlightObjectPoints(targetIdx) {
+function _applyHighlight() {
   if (!memoryPointCloud || !memoryObjIdx || !memoryOriginalColors) return;
   const colorAttr = memoryPointCloud.geometry.attributes.color;
-  if (!colorAttr) return;
+  const posAttr = memoryPointCloud.geometry.attributes.position;
+  if (!colorAttr || !posAttr) return;
   const colors = colorAttr.array;
+  const positions = posAttr.array;
   const N = memoryObjIdx.length;
-  let matched = 0;
-  for (let i = 0; i < N; i++) {
-    if (memoryObjIdx[i] === targetIdx) {
-      const i3 = i * 3;
-      colors[i3] = Math.min(colors[i3] * 1.7, 1.0);
-      colors[i3 + 1] = Math.min(colors[i3 + 1] * 1.7, 1.0);
-      colors[i3 + 2] = Math.min(colors[i3 + 2] * 1.7, 1.0);
-      matched++;
-    }
-  }
-  colorAttr.needsUpdate = true;
-  console.log('[Memory] Brightened ' + matched + ' / ' + N + ' points for idx=' + targetIdx);
-}
 
-function _restoreObjectColors(targetIdx) {
-  if (!memoryPointCloud || !memoryObjIdx || !memoryOriginalColors) return;
-  const colorAttr = memoryPointCloud.geometry.attributes.color;
-  if (!colorAttr) return;
-  const colors = colorAttr.array;
-  const N = memoryObjIdx.length;
-  let restored = 0;
+  // Pre-compute proximity data for selected objects
+  const selData = [];
+  for (const [idx, entry] of selectedObjects) {
+    selData.push({ idx, cx: entry.cx, cy: entry.cy, cz: entry.cz, r2: (entry.radius * 2.0) ** 2 });
+  }
+
+  let brightened = 0, dimmed = 0;
   for (let i = 0; i < N; i++) {
-    if (memoryObjIdx[i] === targetIdx) {
-      const i3 = i * 3;
-      colors[i3] = memoryOriginalColors[i3];
-      colors[i3 + 1] = memoryOriginalColors[i3 + 1];
-      colors[i3 + 2] = memoryOriginalColors[i3 + 2];
-      restored++;
+    const i3 = i * 3;
+    const oid = memoryObjIdx[i];
+    const oR = memoryOriginalColors[i3];
+    const oG = memoryOriginalColors[i3 + 1];
+    const oB = memoryOriginalColors[i3 + 2];
+
+    if (selectedObjects.has(oid)) {
+      colors[i3] = Math.min(oR * 1.7, 1.0);
+      colors[i3 + 1] = Math.min(oG * 1.7, 1.0);
+      colors[i3 + 2] = Math.min(oB * 1.7, 1.0);
+      brightened++;
+    } else if (selData.length > 0) {
+      const px = positions[i3], py = positions[i3 + 1], pz = positions[i3 + 2];
+      let inProximity = false;
+      for (const sel of selData) {
+        const dx = px - sel.cx, dy = py - sel.cy, dz = pz - sel.cz;
+        if (dx * dx + dy * dy + dz * dz < sel.r2) { inProximity = true; break; }
+      }
+      if (inProximity) {
+        colors[i3] = oR * 0.4;
+        colors[i3 + 1] = oG * 0.4;
+        colors[i3 + 2] = oB * 0.4;
+        dimmed++;
+      } else {
+        colors[i3] = oR;
+        colors[i3 + 1] = oG;
+        colors[i3 + 2] = oB;
+      }
+    } else {
+      colors[i3] = oR;
+      colors[i3 + 1] = oG;
+      colors[i3 + 2] = oB;
     }
   }
   colorAttr.needsUpdate = true;
+  if (selData.length > 0) {
+    console.log('[Memory] Highlight: ' + brightened + ' brightened, ' + dimmed + ' dimmed');
+  } else {
+    console.log('[Memory] Highlight: all restored (' + N + ' points)');
+  }
 }
 
 function onFlightMouseMove(e) {
@@ -1427,6 +1452,29 @@ async function loadMemoryLabels(objIdx, positions, N) {
     const objCount = Object.keys(nodeMap).length;
     console.log('[Memory] centroid computed: ' + objCount + ' objects (bg=' + bgCount + '), ' + centroidMs + 'ms');
 
+    // Second pass: compute max distance (radius) for each object
+    const tRadius = performance.now();
+    for (const oid in nodeMap) {
+      const c = nodeMap[oid];
+      c.cx = c.sx / c.count;
+      c.cy = c.sy / c.count;
+      c.cz = c.sz / c.count;
+      c.maxDistSq = 0;
+    }
+    for (let i = 0; i < labelN; i++) {
+      const oid = objIdx[i];
+      if (oid === 0 || !nodeMap[oid]) continue;
+      const c = nodeMap[oid];
+      const i3 = i * 3;
+      const dx = positions[i3] - c.cx;
+      const dy = positions[i3 + 1] - c.cy;
+      const dz = positions[i3 + 2] - c.cz;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 > c.maxDistSq) c.maxDistSq = d2;
+    }
+    const radiusMs = (performance.now() - tRadius).toFixed(0);
+    console.log('[Memory] object radii computed: ' + radiusMs + 'ms');
+
     // Build ring sprites only (labels shown on click)
     const tSprites = performance.now();
     let createdCount = 0;
@@ -1435,17 +1483,19 @@ async function loadMemoryLabels(objIdx, positions, N) {
     for (const node of nodes) {
       if (node.idx == null) continue;
       const centroid = nodeMap[node.idx];
-      let cx, cy, cz;
+      let cx, cy, cz, radius;
 
       if (centroid && centroid.count > 100) {
-        cx = centroid.sx / centroid.count;
-        cy = centroid.sy / centroid.count;
-        cz = centroid.sz / centroid.count;
+        cx = centroid.cx;
+        cy = centroid.cy;
+        cz = centroid.cz;
+        radius = Math.sqrt(centroid.maxDistSq) || 0.3;
         createdCount++;
       } else {
         cx = node.center?.[0] ?? 0;
         cy = node.center?.[1] ?? 0;
         cz = node.center?.[2] ?? 0;
+        radius = 0.3;
         fallbackCount++;
         console.log('[Memory] label "' + node.category + '" (idx=' + node.idx + ') using fallback center, point count=' + (centroid ? centroid.count : 0));
       }
@@ -1453,7 +1503,7 @@ async function loadMemoryLabels(objIdx, positions, N) {
       const ring = makeRingSprite();
       ring.position.set(cx, cy, cz);
       ring.scale.set(0.06, 0.06, 1);
-      ring.userData = { idx: node.idx, category: node.category, cx, cy, cz };
+      ring.userData = { idx: node.idx, category: node.category, cx, cy, cz, radius: radius };
       memoryScene.add(ring);
       memoryRingSprites.push(ring);
     }
@@ -2726,9 +2776,9 @@ function startSpatialCapture() {
     // Clear selection state
     for (const [idx, entry] of selectedObjects) {
       if (entry.labelSprite) { memoryScene.remove(entry.labelSprite); disposeObject(entry.labelSprite); }
-      _restoreObjectColors(idx);
     }
     selectedObjects.clear();
+    _applyHighlight();
     memoryObjIdx = null;
     memoryOriginalColors = null;
     memorySceneLoaded = false;
