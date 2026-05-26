@@ -728,6 +728,9 @@ let memoryPointCloud = null;
 let memoryLabelSprites = [];
 let memoryRingSprites = [];
 let memorySceneGraph = null;
+let memoryObjIdx = null;
+let memoryOriginalColors = null;
+let selectedObjects = new Map();  // idx -> { node, cx, cy, cz, labelSprite }
 let memorySceneCenter = [0, 0, 0];
 let memorySceneScale = 1.0;
 
@@ -874,6 +877,7 @@ async function init3DScene() {
   flightRightDown = false;
   flightLastMouseX = 0;
   flightLastMouseY = 0;
+  let _clickStartPos = { x: 0, y: 0 };
   resetStartPos = new THREE.Vector3();
   resetStartTarget = new THREE.Vector3();
 
@@ -883,6 +887,7 @@ async function init3DScene() {
   renderer.domElement.addEventListener('mousemove', onFlightMouseMove);
   renderer.domElement.addEventListener('wheel', onFlightWheel, { passive: false });
   renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
+  renderer.domElement.addEventListener('click', onMemoryRingClick);
   window.addEventListener('keydown', onFlightKeyDown);
   window.addEventListener('keyup', onFlightKeyUp);
 
@@ -961,12 +966,107 @@ function onFlightMouseDown(e) {
   if (e.button === 2) { flightRightDown = true; }
   flightLastMouseX = e.clientX;
   flightLastMouseY = e.clientY;
+  _clickStartPos = { x: e.clientX, y: e.clientY };
   e.preventDefault();
 }
 
 function onFlightMouseUp(e) {
   if (e.button === 0) { flightLeftDown = false; }
   if (e.button === 2) { flightRightDown = false; }
+}
+
+// ── Memory ring click → highlight interaction ──
+const HIGHLIGHT_COLOR = [1.0, 0.427, 0.0]; // orange #ff6d00
+
+function onMemoryRingClick(e) {
+  if (!memoryActive || memoryRingSprites.length === 0) return;
+  // Distinguish click from drag
+  const dx = e.clientX - _clickStartPos.x;
+  const dy = e.clientY - _clickStartPos.y;
+  if (Math.sqrt(dx * dx + dy * dy) > 4) return;
+
+  const rect = renderer.domElement.getBoundingClientRect();
+  const mouse = new THREE.Vector2(
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1
+  );
+
+  const raycaster = new THREE.Raycaster();
+  raycaster.setFromCamera(mouse, camera3d);
+  const hits = raycaster.intersectObjects(memoryRingSprites);
+  if (hits.length > 0) {
+    const ring = hits[0].object;
+    const { idx, category, cx, cy, cz } = ring.userData;
+    _toggleObjectSelection(idx, category, cx, cy, cz);
+  } else {
+    _deselectAllObjects();
+  }
+}
+
+function _toggleObjectSelection(idx, category, cx, cy, cz) {
+  if (selectedObjects.has(idx)) {
+    // Deselect
+    const entry = selectedObjects.get(idx);
+    if (entry.labelSprite) { memoryScene.remove(entry.labelSprite); disposeObject(entry.labelSprite); }
+    selectedObjects.delete(idx);
+    _restoreObjectColors(idx);
+    console.log('[Memory] Deselected: ' + category + ' (idx=' + idx + ')');
+  } else {
+    // Select — highlight points + show label
+    _highlightObjectPoints(idx);
+    const label = makeClickLabelSprite(category);
+    label.position.set(cx, cy + 0.25, cz);
+    label.scale.set(0.2, 0.07, 1);
+    memoryScene.add(label);
+    selectedObjects.set(idx, { category, cx, cy, cz, labelSprite: label });
+    console.log('[Memory] Selected: ' + category + ' (idx=' + idx + ')');
+  }
+}
+
+function _deselectAllObjects() {
+  if (selectedObjects.size === 0) return;
+  for (const [idx, entry] of selectedObjects) {
+    if (entry.labelSprite) { memoryScene.remove(entry.labelSprite); disposeObject(entry.labelSprite); }
+    _restoreObjectColors(idx);
+  }
+  selectedObjects.clear();
+  console.log('[Memory] All deselected');
+}
+
+function _highlightObjectPoints(targetIdx) {
+  if (!memoryPointCloud || !memoryObjIdx || !memoryOriginalColors) return;
+  const colorAttr = memoryPointCloud.geometry.attributes.color;
+  if (!colorAttr) return;
+  const colors = colorAttr.array;
+  const N = memoryObjIdx.length;
+  for (let i = 0; i < N; i++) {
+    if (memoryObjIdx[i] === targetIdx) {
+      const i3 = i * 3;
+      colors[i3] = HIGHLIGHT_COLOR[0];
+      colors[i3 + 1] = HIGHLIGHT_COLOR[1];
+      colors[i3 + 2] = HIGHLIGHT_COLOR[2];
+    }
+  }
+  colorAttr.needsUpdate = true;
+}
+
+function _restoreObjectColors(targetIdx) {
+  if (!memoryPointCloud || !memoryObjIdx || !memoryOriginalColors) return;
+  const colorAttr = memoryPointCloud.geometry.attributes.color;
+  if (!colorAttr) return;
+  const colors = colorAttr.array;
+  const N = memoryObjIdx.length;
+  let restored = 0;
+  for (let i = 0; i < N; i++) {
+    if (memoryObjIdx[i] === targetIdx) {
+      const i3 = i * 3;
+      colors[i3] = memoryOriginalColors[i3];
+      colors[i3 + 1] = memoryOriginalColors[i3 + 1];
+      colors[i3 + 2] = memoryOriginalColors[i3 + 2];
+      restored++;
+    }
+  }
+  colorAttr.needsUpdate = true;
 }
 
 function onFlightMouseMove(e) {
@@ -1166,6 +1266,10 @@ async function loadMemoryPointCloud() {
     memoryPointCloud = new THREE.Points(geom, mat);
     memoryScene.add(memoryPointCloud);
 
+    // Save for click-to-highlight interaction
+    memoryObjIdx = objIdx;
+    memoryOriginalColors = new Float32Array(colors);
+
     const geomMs = (performance.now() - tGeom).toFixed(0);
     console.log('[Memory] geometry + GPU upload in ' + geomMs + 'ms');
 
@@ -1194,8 +1298,8 @@ async function loadMemoryPointCloud() {
     memorySceneLoaded = true;
 
     const totalMs = (performance.now() - tTotal0).toFixed(0);
-    _updateLoading('空间记忆加载完成 (' + totalMs + 'ms)\n' + N.toLocaleString() + ' 点, ' + memoryLabelSprites.length + ' 标签');
-    console.log('[Memory] TOTAL load time: ' + totalMs + 'ms — ' + N.toLocaleString() + ' points, ' + memoryLabelSprites.length + ' labels');
+    _updateLoading('空间记忆加载完成 (' + totalMs + 'ms)\n' + N.toLocaleString() + ' 点, ' + memoryRingSprites.length + ' 物体');
+    console.log('[Memory] TOTAL load time: ' + totalMs + 'ms — ' + N.toLocaleString() + ' points, ' + memoryRingSprites.length + ' objects');
 
     // Clear overlay after 1.5s
     setTimeout(() => { if (loadingEl) loadingEl.remove(); }, 1500);
@@ -1208,31 +1312,30 @@ async function loadMemoryPointCloud() {
   }
 }
 
-function makeTextSprite(text) {
+function makeClickLabelSprite(text) {
   const canvas = document.createElement('canvas');
-  canvas.width = 128;
-  canvas.height = 32;
+  canvas.width = 256;
+  canvas.height = 80;
   const ctx = canvas.getContext('2d');
-  // Rounded rect background
-  const r = 6;
+  const r = 10;
   ctx.beginPath();
   ctx.moveTo(r, 0);
-  ctx.lineTo(128 - r, 0);
-  ctx.quadraticCurveTo(128, 0, 128, r);
-  ctx.lineTo(128, 32 - r);
-  ctx.quadraticCurveTo(128, 32, 128 - r, 32);
-  ctx.lineTo(r, 32);
-  ctx.quadraticCurveTo(0, 32, 0, 32 - r);
+  ctx.lineTo(256 - r, 0);
+  ctx.quadraticCurveTo(256, 0, 256, r);
+  ctx.lineTo(256, 80 - r);
+  ctx.quadraticCurveTo(256, 80, 256 - r, 80);
+  ctx.lineTo(r, 80);
+  ctx.quadraticCurveTo(0, 80, 0, 80 - r);
   ctx.lineTo(0, r);
   ctx.quadraticCurveTo(0, 0, r, 0);
   ctx.closePath();
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
   ctx.fill();
-  ctx.font = 'Bold 13px -apple-system, sans-serif';
+  ctx.font = 'Bold 22px -apple-system, sans-serif';
   ctx.fillStyle = '#fff';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(text, 64, 16);
+  ctx.fillText(text, 128, 40);
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.minFilter = THREE.LinearFilter;
@@ -1267,6 +1370,10 @@ async function loadMemoryLabels(objIdx, positions, N) {
   memoryLabelSprites = [];
   memoryRingSprites.forEach(s => memoryScene.remove(s));
   memoryRingSprites = [];
+  for (const [idx, entry] of selectedObjects) {
+    if (entry.labelSprite) { memoryScene.remove(entry.labelSprite); disposeObject(entry.labelSprite); }
+  }
+  selectedObjects.clear();
 
   try {
     const tLabel = performance.now();
@@ -1298,9 +1405,8 @@ async function loadMemoryLabels(objIdx, positions, N) {
     const objCount = Object.keys(nodeMap).length;
     console.log('[Memory] centroid computed: ' + objCount + ' objects (bg=' + bgCount + '), ' + centroidMs + 'ms');
 
-    // Build ring sprites + mini text labels
+    // Build ring sprites only (labels shown on click)
     const tSprites = performance.now();
-    const LABEL_Y_OFFSET = 0.2;
     let createdCount = 0;
     let fallbackCount = 0;
 
@@ -1325,19 +1431,14 @@ async function loadMemoryLabels(objIdx, positions, N) {
       const ring = makeRingSprite();
       ring.position.set(cx, cy, cz);
       ring.scale.set(0.06, 0.06, 1);
+      ring.userData = { idx: node.idx, category: node.category, cx, cy, cz };
       memoryScene.add(ring);
       memoryRingSprites.push(ring);
-
-      const sprite = makeTextSprite(node.category || 'object');
-      sprite.position.set(cx, cy + LABEL_Y_OFFSET, cz);
-      sprite.scale.set(0.08, 0.025, 1);
-      memoryScene.add(sprite);
-      memoryLabelSprites.push(sprite);
     }
 
     const spriteMs = (performance.now() - tSprites).toFixed(0);
     const totalLabelMs = (performance.now() - tLabel).toFixed(0);
-    console.log('[Memory] labels created: ' + createdCount + ' centroid + ' + fallbackCount + ' fallback, sprites=' + spriteMs + 'ms, total=' + totalLabelMs + 'ms');
+    console.log('[Memory] rings created: ' + createdCount + ' centroid + ' + fallbackCount + ' fallback, ms=' + spriteMs + ', total=' + totalLabelMs + 'ms');
   } catch (err) {
     console.warn('[Memory] Failed to load labels:', err.message, err);
   }
@@ -2572,6 +2673,14 @@ function startSpatialCapture() {
     memoryLabelSprites = [];
     memoryRingSprites.forEach(s => memoryScene.remove(s));
     memoryRingSprites = [];
+    // Clear selection state
+    for (const [idx, entry] of selectedObjects) {
+      if (entry.labelSprite) { memoryScene.remove(entry.labelSprite); disposeObject(entry.labelSprite); }
+      _restoreObjectColors(idx);
+    }
+    selectedObjects.clear();
+    memoryObjIdx = null;
+    memoryOriginalColors = null;
     memorySceneLoaded = false;
     memorySceneGraph = null;
 
