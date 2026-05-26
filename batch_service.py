@@ -666,6 +666,7 @@ async def start_inference(batch_id: str, body: dict):
     model_state["known_paths"] = set()
     model_state["is_streaming"] = True
     model_state["stop_event"].clear()
+    batch_status["dgsg_status"] = "idle"  # Reset from previous run
     model_state["finish_requested"] = False
     model_state["all_predictions"] = {
         "pose_enc": [],
@@ -748,40 +749,51 @@ def _auto_dgsg_pipeline(batch_id: str):
     update_status(dgsg_status="building")
     try:
         write_log(f"[DGSG] 建图管线启动: batch={batch_id} → scene={scene_name}", "info")
-        result = subprocess.run(
+        process = subprocess.Popen(
             ["bash", pipeline_script, batch_id, scene_name],
-            capture_output=True, text=True, timeout=3600
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1
         )
-        if result.returncode == 0:
+        stdout_lines = []
+        for line in process.stdout:
+            line = line.rstrip('\n\r')
+            stdout_lines.append(line)
+            if line:
+                print(f"[DGSG] {line}", flush=True)
+                write_log(f"[DGSG] {line}", "info")
+        process.wait(timeout=3600)
+        if process.returncode == 0:
             update_status(dgsg_status="done")
             write_log("[DGSG] 建图管线完成", "ok")
 
             # ── 建图成功后自动 convert ──
             write_log(f"[CONVERT] 开始转换点云数据: scene={scene_name}", "info")
             try:
-                cv_result = subprocess.run(
+                cv_process = subprocess.Popen(
                     ["python3", convert_script, scene_name],
-                    capture_output=True, text=True, timeout=300
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1
                 )
-                for line in cv_result.stdout.strip().split('\n'):
-                    if line.strip():
-                        write_log(f"[CONVERT] {line.strip()}", "info")
-                if cv_result.returncode != 0:
-                    write_log(f"[CONVERT] 转换失败 (rc={cv_result.returncode}): {cv_result.stderr[:300]}", "err")
+                for line in cv_process.stdout:
+                    line = line.rstrip('\n\r')
+                    if line:
+                        print(f"[CONVERT] {line}", flush=True)
+                        write_log(f"[CONVERT] {line}", "info")
+                cv_process.wait(timeout=300)
+                if cv_process.returncode != 0:
+                    write_log(f"[CONVERT] 转换失败 (rc={cv_process.returncode})", "err")
                 else:
                     write_log("[CONVERT] 转换完成，前端可切换至空间记忆模式", "ok")
             except subprocess.TimeoutExpired:
+                cv_process.kill()
                 write_log("[CONVERT] 转换超时（>5分钟）", "err")
             except Exception as e:
                 write_log(f"[CONVERT] 转换异常: {e}", "err")
         else:
-            update_status(dgsg_status="error", dgsg_error=result.stderr[:200])
-            write_log(f"[DGSG] 建图管线失败 (rc={result.returncode}): {result.stderr[:200]}", "err")
-            if result.stdout:
-                for line in result.stdout.strip().split('\n')[-5:]:
-                    if line.strip():
-                        write_log(f"[DGSG] {line.strip()}", "err")
+            update_status(dgsg_status="error", dgsg_error="\n".join(stdout_lines[-10:]))
+            write_log(f"[DGSG] 建图管线失败 (rc={process.returncode})", "err")
     except subprocess.TimeoutExpired:
+        process.kill()
         update_status(dgsg_status="error", dgsg_error="timeout")
         write_log("[DGSG] 建图管线超时（>1小时），已终止", "err")
     except Exception as e:
