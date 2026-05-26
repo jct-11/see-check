@@ -726,8 +726,7 @@ let memorySceneLoaded = false;
 let memorySceneLoading = false;
 let memoryPointCloud = null;
 let memoryLabelSprites = [];
-let memoryDots = null;
-let memoryConnectors = null;
+let memoryRingSprites = [];
 let memorySceneGraph = null;
 let memorySceneCenter = [0, 0, 0];
 let memorySceneScale = 1.0;
@@ -1211,16 +1210,29 @@ async function loadMemoryPointCloud() {
 
 function makeTextSprite(text) {
   const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 64;
+  canvas.width = 128;
+  canvas.height = 32;
   const ctx = canvas.getContext('2d');
-  ctx.font = 'Bold 28px -apple-system, sans-serif';
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // Rounded rect background
+  const r = 6;
+  ctx.beginPath();
+  ctx.moveTo(r, 0);
+  ctx.lineTo(128 - r, 0);
+  ctx.quadraticCurveTo(128, 0, 128, r);
+  ctx.lineTo(128, 32 - r);
+  ctx.quadraticCurveTo(128, 32, 128 - r, 32);
+  ctx.lineTo(r, 32);
+  ctx.quadraticCurveTo(0, 32, 0, 32 - r);
+  ctx.lineTo(0, r);
+  ctx.quadraticCurveTo(0, 0, r, 0);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+  ctx.fill();
+  ctx.font = 'Bold 13px -apple-system, sans-serif';
   ctx.fillStyle = '#fff';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(text, 128, 32);
+  ctx.fillText(text, 64, 16);
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.minFilter = THREE.LinearFilter;
@@ -1228,12 +1240,33 @@ function makeTextSprite(text) {
   return new THREE.Sprite(spriteMat);
 }
 
+function makeRingSprite() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 32;
+  canvas.height = 32;
+  const ctx = canvas.getContext('2d');
+  ctx.beginPath();
+  ctx.arc(16, 16, 7, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(68, 138, 255, 0.85)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(16, 16, 2.5, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(68, 138, 255, 0.9)';
+  ctx.fill();
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  const spriteMat = new THREE.SpriteMaterial({ map: texture, depthTest: true, depthWrite: false });
+  return new THREE.Sprite(spriteMat);
+}
+
 async function loadMemoryLabels(objIdx, positions, N) {
-  // Clean up previous labels/dots/lines if re-loading
+  // Clean up previous labels/rings if re-loading
   memoryLabelSprites.forEach(s => memoryScene.remove(s));
   memoryLabelSprites = [];
-  if (memoryDots) { memoryScene.remove(memoryDots); disposeObject(memoryDots); memoryDots = null; }
-  if (memoryConnectors) { memoryScene.remove(memoryConnectors); disposeObject(memoryConnectors); memoryConnectors = null; }
+  memoryRingSprites.forEach(s => memoryScene.remove(s));
+  memoryRingSprites = [];
 
   try {
     const tLabel = performance.now();
@@ -1265,14 +1298,11 @@ async function loadMemoryLabels(objIdx, positions, N) {
     const objCount = Object.keys(nodeMap).length;
     console.log('[Memory] centroid computed: ' + objCount + ' objects (bg=' + bgCount + '), ' + centroidMs + 'ms');
 
-    // Build dots + lines + sprites
+    // Build ring sprites + mini text labels
     const tSprites = performance.now();
     const LABEL_Y_OFFSET = 0.2;
     let createdCount = 0;
     let fallbackCount = 0;
-
-    const dotPositions = [];
-    const lineVertices = [];
 
     for (const node of nodes) {
       if (node.idx == null) continue;
@@ -1292,42 +1322,17 @@ async function loadMemoryLabels(objIdx, positions, N) {
         console.log('[Memory] label "' + node.category + '" (idx=' + node.idx + ') using fallback center, point count=' + (centroid ? centroid.count : 0));
       }
 
-      dotPositions.push(cx, cy, cz);
-      lineVertices.push(cx, cy, cz, cx, cy + LABEL_Y_OFFSET, cz);
+      const ring = makeRingSprite();
+      ring.position.set(cx, cy, cz);
+      ring.scale.set(0.06, 0.06, 1);
+      memoryScene.add(ring);
+      memoryRingSprites.push(ring);
 
       const sprite = makeTextSprite(node.category || 'object');
       sprite.position.set(cx, cy + LABEL_Y_OFFSET, cz);
-      sprite.scale.set(0.15, 0.05, 1);
+      sprite.scale.set(0.08, 0.025, 1);
       memoryScene.add(sprite);
       memoryLabelSprites.push(sprite);
-    }
-
-    // Blue dots — single Points object
-    if (dotPositions.length > 0) {
-      const dotGeom = new THREE.BufferGeometry();
-      dotGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(dotPositions), 3));
-      const dotMat = new THREE.PointsMaterial({
-        color: 0x448aff,
-        size: guiPointSize * 3,
-        sizeAttenuation: true,
-        depthTest: true,
-        depthWrite: false,
-      });
-      memoryDots = new THREE.Points(dotGeom, dotMat);
-      memoryScene.add(memoryDots);
-    }
-
-    // Thin connector lines — single LineSegments object
-    if (lineVertices.length > 0) {
-      const lineGeom = new THREE.BufferGeometry();
-      lineGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(lineVertices), 3));
-      const lineMat = new THREE.LineBasicMaterial({
-        color: 0x999999,
-        depthTest: true,
-        depthWrite: false,
-      });
-      memoryConnectors = new THREE.LineSegments(lineGeom, lineMat);
-      memoryScene.add(memoryConnectors);
     }
 
     const spriteMs = (performance.now() - tSprites).toFixed(0);
@@ -2565,8 +2570,8 @@ function startSpatialCapture() {
     }
     memoryLabelSprites.forEach(s => memoryScene.remove(s));
     memoryLabelSprites = [];
-    if (memoryDots) { memoryScene.remove(memoryDots); disposeObject(memoryDots); memoryDots = null; }
-    if (memoryConnectors) { memoryScene.remove(memoryConnectors); disposeObject(memoryConnectors); memoryConnectors = null; }
+    memoryRingSprites.forEach(s => memoryScene.remove(s));
+    memoryRingSprites = [];
     memorySceneLoaded = false;
     memorySceneGraph = null;
 
