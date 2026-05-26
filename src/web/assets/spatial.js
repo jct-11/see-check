@@ -979,14 +979,6 @@ function onFlightMouseUp(e) {
 }
 
 // ── Memory ring click → highlight interaction ──
-const GOLDEN_RATIO = 0.618033988749895;
-let _nextHighlightHue = Math.random();
-
-function _nextHighlightColor() {
-  _nextHighlightHue = (_nextHighlightHue + GOLDEN_RATIO) % 1;
-  const rgb = new THREE.Color().setHSL(_nextHighlightHue, 0.7, 0.55);
-  return [rgb.r, rgb.g, rgb.b];
-}
 
 function onMemoryRingClick(e) {
   if (!memoryActive || memoryRingSprites.length === 0) return;
@@ -1035,13 +1027,12 @@ function _toggleObjectSelection(idx, category, cx, cy, cz) {
     _restoreObjectColors(idx);
     console.log('[Memory] Deselected: ' + category + ' (idx=' + idx + ')');
   } else {
-    const color = _nextHighlightColor();
-    _highlightObjectPoints(idx, color);
+    _highlightObjectPoints(idx);
     const label = makeClickLabelSprite(category);
     label.position.set(cx, cy + 0.25, cz);
     label.scale.set(0.2, 0.07, 1);
     memoryScene.add(label);
-    selectedObjects.set(idx, { category, cx, cy, cz, labelSprite: label, color: color });
+    selectedObjects.set(idx, { category, cx, cy, cz, labelSprite: label });
     console.log('[Memory] Selected: ' + category + ' (idx=' + idx + ')');
   }
 }
@@ -1056,7 +1047,7 @@ function _deselectAllObjects() {
   console.log('[Memory] All deselected');
 }
 
-function _highlightObjectPoints(targetIdx, color) {
+function _highlightObjectPoints(targetIdx) {
   if (!memoryPointCloud || !memoryObjIdx || !memoryOriginalColors) return;
   const colorAttr = memoryPointCloud.geometry.attributes.color;
   if (!colorAttr) return;
@@ -1066,14 +1057,14 @@ function _highlightObjectPoints(targetIdx, color) {
   for (let i = 0; i < N; i++) {
     if (memoryObjIdx[i] === targetIdx) {
       const i3 = i * 3;
-      colors[i3] = color[0];
-      colors[i3 + 1] = color[1];
-      colors[i3 + 2] = color[2];
+      colors[i3] = Math.min(colors[i3] * 1.7, 1.0);
+      colors[i3 + 1] = Math.min(colors[i3 + 1] * 1.7, 1.0);
+      colors[i3 + 2] = Math.min(colors[i3 + 2] * 1.7, 1.0);
       matched++;
     }
   }
   colorAttr.needsUpdate = true;
-  console.log('[Memory] Highlighted ' + matched + ' / ' + N + ' points for idx=' + targetIdx);
+  console.log('[Memory] Brightened ' + matched + ' / ' + N + ' points for idx=' + targetIdx);
 }
 
 function _restoreObjectColors(targetIdx) {
