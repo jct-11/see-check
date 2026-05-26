@@ -727,10 +727,14 @@ let memorySceneLoading = false;
 let memoryPointCloud = null;
 let memoryLabelSprites = [];
 let memorySceneGraph = null;
-let viewMode = 'spatial';
-let modeSwitchGen = 0;
 let memorySceneCenter = [0, 0, 0];
 let memorySceneScale = 1.0;
+
+// Auto-replace state machine
+let memoryActive = false;
+let streamingComplete = false;
+let semanticReady = false;
+let autoReplaced = false;
 let controls = null; // removed OrbitControls, kept for compat
 let animationId = null;
 // Camera rotation — Euler smoothing
@@ -890,10 +894,6 @@ async function init3DScene() {
   memoryGrid.position.y = 0;
   memoryScene.add(memoryGrid);
 
-  // Show mode toggle button
-  const toggleEl = document.getElementById('viewModeToggle');
-  if (toggleEl) toggleEl.style.display = 'flex';
-
   // Mode toggle and reset keys (separate from movement keys)
   window.addEventListener('keydown', function(e) {
     if (cameraFollowEnabled) return;
@@ -1023,10 +1023,10 @@ function onFlightKeyUp(e) {
 
 function clampCameraToSphere() {
   if (!camera3d) return;
-  const cx = viewMode === 'memory' && memorySceneLoaded ? memorySceneCenter[0] : sceneCenter[0];
-  const cy = viewMode === 'memory' && memorySceneLoaded ? memorySceneCenter[1] : sceneCenter[1];
-  const cz = viewMode === 'memory' && memorySceneLoaded ? memorySceneCenter[2] : sceneCenter[2];
-  const sc = viewMode === 'memory' && memorySceneLoaded ? memorySceneScale : sceneScale;
+  const cx = memoryActive ? memorySceneCenter[0] : sceneCenter[0];
+  const cy = memoryActive ? memorySceneCenter[1] : sceneCenter[1];
+  const cz = memoryActive ? memorySceneCenter[2] : sceneCenter[2];
+  const sc = memoryActive ? memorySceneScale : sceneScale;
   const lim = Math.max(sc * 1.2, 3.0);
   const dx = camera3d.position.x - cx;
   const dy = camera3d.position.y - cy;
@@ -1201,11 +1201,6 @@ async function loadMemoryPointCloud() {
   } catch (err) {
     console.warn('[Memory] FAILED:', err.message, err);
     _updateLoading('加载失败: ' + err.message + '\n请确认建图管线已完成');
-    const toggleEl = document.getElementById('viewModeToggle');
-    if (toggleEl) {
-      toggleEl.title = '空间记忆数据未生成，请等待建图管线完成';
-      toggleEl.style.opacity = '0.5';
-    }
     setTimeout(() => { if (loadingEl) loadingEl.remove(); }, 5000);
   } finally {
     memorySceneLoading = false;
@@ -1299,36 +1294,49 @@ async function loadMemoryLabels(objIdx, positions, N) {
   }
 }
 
-async function switchViewMode(mode) {
-  if (viewMode === mode) return;
-  const gen = ++modeSwitchGen;
+// ---------- Auto-replace State Machine ----------
 
-  const spatialUI = document.getElementById('spatialModeUI');
-  const btns = document.querySelectorAll('.mode-btn');
+function _checkAutoReplace() {
+  if (autoReplaced) return;
+  if (streamingComplete && semanticReady) {
+    console.log('[Memory] Both conditions met, triggering auto-replace');
+    triggerSemanticReplacement();
+  }
+}
 
-  if (mode === 'memory') {
-    var firstLoad = !memorySceneLoaded;
-    if (firstLoad) {
-      await loadMemoryPointCloud();
-      if (gen !== modeSwitchGen) return;
-      if (!memorySceneLoaded) return;
-    }
+async function triggerSemanticReplacement() {
+  if (autoReplaced) return;
+  autoReplaced = true;
 
-    if (spatialUI) spatialUI.style.display = 'none';
-    cameraFollowEnabled = false;
-    camera3d.up.set(0, 1, 0);
-    viewMode = 'memory';
-  } else {
-    if (spatialUI) spatialUI.style.display = '';
-    viewMode = 'spatial';
+  updateStatus({ dgsg_status: 'loading' });
+
+  await loadMemoryPointCloud();
+  if (!memorySceneLoaded) {
+    updateStatus({ dgsg_status: 'error' });
+    autoReplaced = false;
+    return;
   }
 
-  btns.forEach(b => {
-    b.classList.toggle('active', b.dataset.mode === mode);
-    b.setAttribute('aria-pressed', b.dataset.mode === mode ? 'true' : 'false');
-  });
+  // Dispose streaming point cloud objects
+  for (const key in framePointsObjects) {
+    const obj = framePointsObjects[key];
+    if (obj) {
+      scene.remove(obj);
+      disposeObject(obj);
+      delete framePointsObjects[key];
+    }
+  }
+  framePointsObjects = {};
 
-  console.log('[Memory] View mode:', viewMode);
+  memoryActive = true;
+  cameraFollowEnabled = false;
+  camera3d.up.set(0, 1, 0);
+
+  const spatialUI = document.getElementById('spatialModeUI');
+  if (spatialUI) spatialUI.style.display = 'none';
+
+  updateStatus({ dgsg_status: 'replaced' });
+  console.log('[Memory] Auto-replace complete — semantic point cloud active');
 }
 
 // ---------- Animation Loop ----------
@@ -1345,23 +1353,21 @@ function animate() {
   const delta = Math.min((now - lastRenderTime) / 1000, 0.1);
 
   // Camera follow (OpenCV y-down -> flip camera up)
-  if (viewMode === 'spatial' && cameraFollowEnabled && followSmoothedPos && followLookTarget) {
+  if (!memoryActive && cameraFollowEnabled && followSmoothedPos && followLookTarget) {
     camera3d.position.copy(followSmoothedPos);
     camera3d.up.set(0, -1, 0);
     camera3d.lookAt(followLookTarget);
-    // Sync Euler so rotation is continuous on follow exit
     if (currentEuler && targetEuler) {
       currentEuler.setFromQuaternion(camera3d.quaternion, 'YXZ');
       targetEuler.copy(currentEuler);
     }
-  } else if (viewMode === 'memory' || (!cameraFollowEnabled && camera3d)) {
-    // Free-flight: reset animation, rotation smoothing, movement
+  } else {
     updateReset(delta);
     updateCameraRotation(delta);
     updateFlightMovement(delta);
   }
 
-  const activeScene = (viewMode === 'memory' && memorySceneLoaded) ? memoryScene : scene;
+  const activeScene = memoryActive ? memoryScene : scene;
   if (renderer && activeScene && camera3d) {
     frameCount++;
     const now2 = performance.now();
@@ -1961,6 +1967,9 @@ async function fetchNextFrame() {
     var totalFrames = framePointsObjects.length;
     addLog('所有帧点云拉取完成，共 ' + totalFrames + ' 帧', 'ok');
     disableCameraFollow();
+    streamingComplete = true;
+    _checkAutoReplace();
+    if (!autoReplaced) startDgsgStatusPolling();
     return;
   }
   
@@ -1997,8 +2006,9 @@ async function fetchNextFrame() {
       var totalFrames = framePointsObjects.length;
       addLog('所有帧点云拉取完成，共 ' + totalFrames + ' 帧', 'ok');
       disableCameraFollow();
-      // 开始轮询 dgsg 建图状态
-      startDgsgStatusPolling();
+      streamingComplete = true;
+      _checkAutoReplace();
+      if (!autoReplaced) startDgsgStatusPolling();
       return;
     }
     
@@ -2178,8 +2188,14 @@ function startDgsgStatusPolling() {
         if (data.dgsg_status) {
           updateStatus({ dgsg_status: data.dgsg_status });
         }
-        // 建图完成或出错后停止轮询
-        if (data.dgsg_status === 'done' || data.dgsg_status === 'error') {
+        if (data.dgsg_status === 'done') {
+          if (!semanticReady) {
+            semanticReady = true;
+            _checkAutoReplace();
+          }
+          return;
+        }
+        if (data.dgsg_status === 'error') {
           return;
         }
       }
@@ -2274,7 +2290,17 @@ function initApiAndVisualizer() {
         var dsEl = document.getElementById('dgsgStatus');
         var dtEl = document.getElementById('dgsgStatusText');
         if (dsEl) dsEl.style.display = 'block';
-        if (dtEl) dtEl.textContent = '语义添加完成';
+        if (dtEl) dtEl.textContent = streamingComplete ? '正在加载语义点云...' : '语义就绪，等待渲染完成';
+      } else if (status.dgsg_status === 'loading') {
+        var dsEl = document.getElementById('dgsgStatus');
+        var dtEl = document.getElementById('dgsgStatusText');
+        if (dsEl) dsEl.style.display = 'block';
+        if (dtEl) dtEl.textContent = '正在加载语义点云...';
+      } else if (status.dgsg_status === 'replaced') {
+        var dsEl = document.getElementById('dgsgStatus');
+        var dtEl = document.getElementById('dgsgStatusText');
+        if (dsEl) dsEl.style.display = 'block';
+        if (dtEl) dtEl.textContent = '语义点云已加载';
       } else if (status.dgsg_status === 'error') {
         var dsEl = document.getElementById('dgsgStatus');
         var dtEl = document.getElementById('dgsgStatusText');
@@ -2483,6 +2509,27 @@ function startSpatialCapture() {
     SpatialApi.setCapturing(true);
     SpatialApi.reset();
     SpatialApi.getState().isCapturing = true;
+
+    // Reset auto-replace state machine
+    streamingComplete = false;
+    semanticReady = false;
+    autoReplaced = false;
+    memoryActive = false;
+
+    // Dispose old semantic point cloud if re-capturing
+    if (memoryPointCloud) {
+      memoryScene.remove(memoryPointCloud);
+      disposeObject(memoryPointCloud);
+      memoryPointCloud = null;
+    }
+    memoryLabelSprites.forEach(s => memoryScene.remove(s));
+    memoryLabelSprites = [];
+    memorySceneLoaded = false;
+    memorySceneGraph = null;
+
+    const spatialUI = document.getElementById('spatialModeUI');
+    if (spatialUI) spatialUI.style.display = '';
+
     if (SpatialApi.startContinuousCapture) {
       SpatialApi.startContinuousCapture();
     }
@@ -2694,12 +2741,6 @@ function initEventListeners() {
       SpatialVisualizer.togglePointCloud();
     });
   }
-
-  document.querySelectorAll('.mode-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      switchViewMode(btn.dataset.mode);
-    });
-  });
 }
 
 /**
@@ -2922,8 +2963,5 @@ async function startTestProcess() {
 }
 
 window.onSpatialTabShow = function() {
-  const toggleEl = document.getElementById('viewModeToggle');
-  if (toggleEl && renderer) {
-    toggleEl.style.display = 'flex';
-  }
+  // Toggle removed; no-op
 };

@@ -14,6 +14,4 @@ function switchTab(name) {
         }
       }
       if (name === 'space') { setTimeout(function() { if (typeof initPLYViewer === 'function') initPLYViewer(); if (typeof initSceneGraph === 'function') initSceneGraph(); if (typeof onSpatialTabShow === 'function') onSpatialTabShow(); }, 100); }
-      var toggleEl = document.getElementById('viewModeToggle');
-      if (toggleEl) { toggleEl.style.display = (name === 'space') ? 'flex' : 'none'; }
     }
