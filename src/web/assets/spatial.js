@@ -1681,9 +1681,9 @@ function addFramePointCloudToScene(frameIndex) {
   if (count === 0) return;
 
   const tFilterEnd = performance.now();
-  console.log('[点云] #' + frameIndex + ' 过滤 ' + count + '/' + numPoints + ' 点 ' + (tFilterEnd - window.__tFilterStart).toFixed(1) + 'ms');
 
   // Create per-frame Points object — no merging, no GPU re-upload of old data
+  const tGeomCreate0 = performance.now();
   const geom = new THREE.BufferGeometry();
   geom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(filteredPos.buffer, 0, count * 3), 3));
   geom.setAttribute("color", new THREE.BufferAttribute(new Float32Array(filteredCol.buffer, 0, count * 3), 3));
@@ -1704,6 +1704,8 @@ function addFramePointCloudToScene(frameIndex) {
   const pointsObj = new THREE.Points(geom, sharedPointMaterial);
   scene.add(pointsObj);
   framePointsObjects.push({ points: pointsObj, frameIndex: frameIndex });
+  const tGeomCreate1 = performance.now();
+  console.log('[点云] #' + frameIndex + ' 过滤 ' + count + '/' + numPoints + ' 点 ' + (tFilterEnd - window.__tFilterStart).toFixed(1) + 'ms + 几何' + (tGeomCreate1 - tGeomCreate0).toFixed(1) + 'ms');
 
   accumCount += count;
   visualizerStats.vertices = accumCount;
@@ -2354,7 +2356,9 @@ async function fetchNextFrame() {
       confs: flatConfsArr
     };
 
+    const tGeom0 = performance.now();
     addFramePointCloudToScene(currentFetchFrame);
+    const tGeom1 = performance.now();
     framePointClouds[currentFetchFrame] = null; // free raw data after accumulation
     if (typeof performance.memory !== "undefined") {
       console.log('[内存] JS堆 ' + (performance.memory.usedJSHeapSize / 1048576).toFixed(1) + '/' + (performance.memory.totalJSHeapSize / 1048576).toFixed(1) + ' MB');
@@ -2380,8 +2384,9 @@ async function fetchNextFrame() {
 
     const tFetch1 = performance.now();
     var netMs = (tNet1 - tNet0).toFixed(0);
-    var otherMs = (tFetch1 - tNet1).toFixed(0);
-    console.log('[拉取] #' + (currentFetchFrame - 1) + ' 完成 ' + (tFetch1 - tFetch0).toFixed(0) + 'ms (网络' + netMs + ' + 处理' + otherMs + 'ms)');
+    var geomMs = (tGeom1 - tGeom0).toFixed(0);
+    var otherMs = (tFetch1 - tGeom1).toFixed(0);
+    console.log('[拉取] #' + (currentFetchFrame - 1) + ' 完成 ' + (tFetch1 - tFetch0).toFixed(0) + 'ms (网络' + netMs + ' + 几何' + geomMs + ' + 其它' + otherMs + 'ms)');
 
     // ✅ 流式模式：先检查状态再继续拉取，避免频繁请求
     // 批量模式：并发预取多帧，减少串行等待
