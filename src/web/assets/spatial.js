@@ -2026,7 +2026,7 @@ async function updateFrameImagePreview(batchId, frameIndex) {
     return;
   }
   const url = await fetchFrameImage(batchId, frameIndex);
-  if (url) {
+  if (url && cameraFollowEnabled) {
     imgEl.src = url;
     imgEl.style.display = 'block';
     labelEl.textContent = '帧 #' + frameIndex;
