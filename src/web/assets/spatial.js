@@ -2286,11 +2286,14 @@ async function fetchNextFrame() {
     }
     var buf = null, cameraResult = null;
     if (queued) {
-      if (queued._promise) { await queued._promise; }
+      if (queued._headersPromise) { await queued._headersPromise; }
       pointCloudResponse = queued._pcResp;
       cameraResponse = queued._camResp;
-      buf = queued._pcBuf;
-      cameraResult = queued._camResult;
+      // body 可能在 header 到达期间已读完
+      if (queued._pcBuf) {
+        buf = queued._pcBuf;
+        cameraResult = queued._camResult;
+      }
     }
     if (!buf && prefetchNext && prefetchNext.frameIndex === currentFetchFrame && prefetchNext.pointCloudResponse) {
       pointCloudResponse = prefetchNext.pointCloudResponse;
@@ -2325,13 +2328,19 @@ async function fetchNextFrame() {
       inferenceTime = parseFloat(pointCloudResponse.headers.get('X-Inference-Time')) || 0;
     }
 
-    // 读取 body（队列已预读，实时 fetch 需等待）
+    // 读取 body（队列预读的用 _bodyPromise，实时 fetch 的用 arrayBuffer）
     var tBody0 = performance.now();
     if (!buf) {
-      if (cameraResponse && cameraResponse.ok) {
-        cameraResult = await cameraResponse.json();
+      if (queued && queued._bodyPromise) {
+        await queued._bodyPromise;
+        buf = queued._pcBuf;
+        cameraResult = queued._camResult;
+      } else {
+        if (cameraResponse && cameraResponse.ok) {
+          cameraResult = await cameraResponse.json();
+        }
+        buf = await pointCloudResponse.arrayBuffer();
       }
-      buf = await pointCloudResponse.arrayBuffer();
     }
     var tBody1 = performance.now();
 
@@ -2408,13 +2417,19 @@ async function fetchNextFrame() {
           highestIdx++;
           var nextIdx = highestIdx;
           var entry = { frameIndex: nextIdx, pointCloudResponse: null, cameraResponse: null };
-          entry._promise = Promise.all([
-            fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + nextIdx + '/point_cloud').then(function (r) { entry._pcResp = r; return r.arrayBuffer(); }),
-            fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + nextIdx + '/camera').then(function (r) { entry._camResp = r; return r.json(); })
+          entry._headersPromise = Promise.all([
+            fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + nextIdx + '/point_cloud').then(function (r) { entry._pcResp = r; return r; }),
+            fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + nextIdx + '/camera').then(function (r) { entry._camResp = r; return r; })
           ]).then(function (results) {
-            entry._pcBuf = results[0];
-            entry._camResult = results[1];
             entry._fetching = false;
+            // 收到头部后立即开始读 body
+            entry._bodyPromise = Promise.all([
+              results[0].arrayBuffer(),
+              results[1].json()
+            ]).then(function (data) {
+              entry._pcBuf = data[0];
+              entry._camResult = data[1];
+            });
             return results;
           }).catch(function (err) {
             console.warn('[预取] #' + nextIdx + ' 失败:', err.message);
