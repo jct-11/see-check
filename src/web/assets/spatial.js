@@ -1025,6 +1025,7 @@ function _toggleObjectSelection(idx, category, cx, cy, cz) {
     if (entry.labelSprite) { memoryScene.remove(entry.labelSprite); disposeObject(entry.labelSprite); }
     selectedObjects.delete(idx);
     _restoreObjectColors(idx);
+    _updateDistanceLines();
     console.log('[Memory] Deselected: ' + category + ' (idx=' + idx + ')');
   } else {
     _highlightObjectPoints(idx);
@@ -1033,6 +1034,7 @@ function _toggleObjectSelection(idx, category, cx, cy, cz) {
     label.scale.set(0.2, 0.07, 1);
     memoryScene.add(label);
     selectedObjects.set(idx, { category, cx, cy, cz, labelSprite: label });
+    _updateDistanceLines();
     console.log('[Memory] Selected: ' + category + ' (idx=' + idx + ')');
   }
 }
@@ -1044,6 +1046,7 @@ function _deselectAllObjects() {
     _restoreObjectColors(idx);
   }
   selectedObjects.clear();
+  _updateDistanceLines();
   console.log('[Memory] All deselected');
 }
 
@@ -1084,6 +1087,64 @@ function _restoreObjectColors(targetIdx) {
     }
   }
   colorAttr.needsUpdate = true;
+}
+
+// ── Distance lines between selected objects ──
+let _distanceLines = []; // { line: THREE.Line, label: THREE.Sprite }
+
+function _updateDistanceLines() {
+  // Remove old lines
+  for (const dl of _distanceLines) {
+    memoryScene.remove(dl.line);
+    disposeObject(dl.line);
+    memoryScene.remove(dl.label);
+    disposeObject(dl.label);
+  }
+  _distanceLines = [];
+
+  if (selectedObjects.size < 2) return;
+
+  const entries = [...selectedObjects.entries()]; // [[idx, {cx,cy,cz,...}]]
+  const lineMat = new THREE.LineBasicMaterial({ color: 0x9933ff, linewidth: 1 });
+
+  for (let i = 0; i < entries.length; i++) {
+    for (let j = i + 1; j < entries.length; j++) {
+      const a = entries[i][1], b = entries[j][1];
+      const p1 = new THREE.Vector3(a.cx, a.cy, a.cz);
+      const p2 = new THREE.Vector3(b.cx, b.cy, b.cz);
+      const dist = p1.distanceTo(p2);
+
+      // Line
+      const geo = new THREE.BufferGeometry().setFromPoints([p1, p2]);
+      const line = new THREE.Line(geo, lineMat);
+      memoryScene.add(line);
+
+      // Distance label at midpoint
+      const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
+      const text = dist.toFixed(2) + ' m';
+      const sprite = _makeDistanceLabel(text);
+      sprite.position.copy(mid);
+      sprite.scale.set(0.2, 0.06, 1);
+      memoryScene.add(sprite);
+
+      _distanceLines.push({ line, label: sprite });
+    }
+  }
+}
+
+function _makeDistanceLabel(text) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 28px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 128, 32);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.minFilter = THREE.LinearFilter;
+  const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false });
+  return new THREE.Sprite(mat);
 }
 
 function onFlightMouseMove(e) {
