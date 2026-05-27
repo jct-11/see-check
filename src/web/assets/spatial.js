@@ -2326,12 +2326,14 @@ async function fetchNextFrame() {
     }
 
     // 读取 body（队列已预读，实时 fetch 需等待）
+    var tBody0 = performance.now();
     if (!buf) {
       if (cameraResponse && cameraResponse.ok) {
         cameraResult = await cameraResponse.json();
       }
       buf = await pointCloudResponse.arrayBuffer();
     }
+    var tBody1 = performance.now();
 
     if (cameraResult && cameraResult.success && cameraResult.camera) {
       camerasData[currentFetchFrame] = cameraResult.camera;
@@ -2383,9 +2385,10 @@ async function fetchNextFrame() {
 
     const tFetch1 = performance.now();
     var netMs = (tNet1 - tNet0).toFixed(0);
+    var bodyMs = (tBody1 - tBody0).toFixed(0);
     var geomMs = (tGeom1 - tGeom0).toFixed(0);
     var otherMs = (tFetch1 - tGeom1).toFixed(0);
-    console.log('[拉取] #' + (currentFetchFrame - 1) + ' 完成 ' + (tFetch1 - tFetch0).toFixed(0) + 'ms (网络' + netMs + ' + 几何' + geomMs + ' + 其它' + otherMs + 'ms)');
+    console.log('[拉取] #' + (currentFetchFrame - 1) + ' 完成 ' + (tFetch1 - tFetch0).toFixed(0) + 'ms (头' + netMs + ' + 体' + bodyMs + ' + 几何' + geomMs + ' + 其它' + otherMs + 'ms)');
 
     // ✅ 流式模式：先检查状态再继续拉取，避免频繁请求
     // 批量模式：并发预取多帧，减少串行等待
@@ -2394,7 +2397,7 @@ async function fetchNextFrame() {
         // 清理队列中已过时或出错的条目
         prefetchQueue = prefetchQueue.filter(function (e) { return e && !e._error && e.frameIndex >= currentFetchFrame; });
         // 并发预取后续帧（一次最多 4 个并发）
-        var CONCURRENCY = 4;
+        var CONCURRENCY = 2;
         var fetching = 0;
         var highestIdx = currentFetchFrame - 1;
         for (var pi = 0; pi < prefetchQueue.length; pi++) {
