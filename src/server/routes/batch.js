@@ -30,6 +30,9 @@ function registerBatchRoutes(router) {
       if (proxyRes.headers['x-inference-time']) {
         resHeaders['X-Inference-Time'] = proxyRes.headers['x-inference-time'];
       }
+      if (proxyRes.headers['content-encoding']) {
+        resHeaders['Content-Encoding'] = proxyRes.headers['content-encoding'];
+      }
       res.writeHead(proxyRes.statusCode, resHeaders);
       proxyRes.pipe(res);
     });

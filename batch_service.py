@@ -22,6 +22,7 @@ import json
 import time
 import glob
 import asyncio
+import gzip
 import subprocess
 import traceback
 import threading
@@ -997,13 +998,17 @@ async def get_frame_point_cloud(batch_id: str, frame_index: int):
     if len(points_arr) == 0:
         raise HTTPException(status_code=404, detail=f"帧 {frame_index} 无有效点云数据")
     
-    # 二进制编码传输（无 base64 膨胀）
+    # 二进制编码传输，gzip 压缩（减少网络传输时间）
     n = np.uint32(len(points_arr))
     buf = n.tobytes() + points_arr.tobytes() + colors_arr.tobytes() + confs_arr.tobytes()
+    compressed = gzip.compress(buf, compresslevel=1)
     return Response(
-        content=buf,
+        content=compressed,
         media_type="application/octet-stream",
-        headers={"X-Inference-Time": str(cached["inference_time"])},
+        headers={
+            "X-Inference-Time": str(cached["inference_time"]),
+            "Content-Encoding": "gzip",
+        },
     )
 
 @app.get("/batch/{batch_id}/frame/{frame_index}/camera")
