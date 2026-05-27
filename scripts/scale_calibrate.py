@@ -71,23 +71,31 @@ def load_model_depths(batch_dir, frame_idx):
     h, w = rgb.shape[:2]
     log(f"Using frame: {rgb_path.name} ({w}x{h})")
 
-    # ── DAv2 Small metric depth (transformers pipeline) ──
+    # ── DAv2 Small metric depth (raw model output in meters) ──
     log("Running DAv2 Small metric depth inference...")
-    from transformers import pipeline
+    from transformers import AutoImageProcessor, AutoModelForDepthEstimation
     import torch
 
-    device = 0 if torch.cuda.is_available() else -1
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     t0 = time.time()
-    pipe = pipeline("depth-estimation", model=DAV2_MODEL, device=device)
-    # pipeline expects PIL Image, not cv2 numpy
+    model = AutoModelForDepthEstimation.from_pretrained(DAV2_MODEL).to(device).eval()
+    processor = AutoImageProcessor.from_pretrained(DAV2_MODEL)
     rgb_pil = Image.fromarray(cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB))
-    result = pipe(rgb_pil)
-    depth_metric = np.array(result["depth"], dtype=np.float32)  # HxW meters
+    inputs = processor(images=rgb_pil, return_tensors="pt").to(device)
+    with torch.no_grad():
+        outputs = model(**inputs)
+        depth_raw = outputs.predicted_depth  # raw meters, not 0-255
+    # Resize to original image size
+    depth_raw = torch.nn.functional.interpolate(
+        depth_raw.unsqueeze(1), size=rgb_pil.size[::-1],
+        mode="bilinear", align_corners=False
+    ).squeeze().cpu().numpy().astype(np.float32)
+    depth_metric = depth_raw  # meters
     model_ms = (time.time() - t0) * 1000
-    log(f"DAv2 inference: {model_ms:.0f}ms (device={'cuda' if device==0 else 'cpu'})")
+    log(f"DAv2 inference: {model_ms:.0f}ms (device={device.type})")
 
     # ── Clean up ──
-    del pipe
+    del model, processor
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
