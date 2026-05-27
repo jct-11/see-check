@@ -2240,7 +2240,8 @@ async function fetchNextFrame() {
       // 如果推理完成但还有帧没拉取，继续拉取
       if (currentStatus === 'completed' && currentFetchFrame < currentProcessedFrames) {
         hasNewFrame = true;
-        console.log('[fetch] 推理完成, 继续拉取: ' + currentFetchFrame + '/' + currentProcessedFrames);
+        totalFramesAvailable = currentProcessedFrames;
+        console.log('[fetch] 推理完成, 开始全速拉取: ' + currentFetchFrame + '/' + currentProcessedFrames);
       }
     }
   } catch (err) {
