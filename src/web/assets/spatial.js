@@ -2284,16 +2284,20 @@ async function fetchNextFrame() {
         break;
       }
     }
+    var buf = null, cameraResult = null;
     if (queued) {
       if (queued._promise) { await queued._promise; }
-      pointCloudResponse = queued.pointCloudResponse;
-      cameraResponse = queued.cameraResponse;
+      pointCloudResponse = queued._pcResp;
+      cameraResponse = queued._camResp;
+      buf = queued._pcBuf;
+      cameraResult = queued._camResult;
     }
-    if (!pointCloudResponse && prefetchNext && prefetchNext.frameIndex === currentFetchFrame && prefetchNext.pointCloudResponse) {
+    if (!buf && prefetchNext && prefetchNext.frameIndex === currentFetchFrame && prefetchNext.pointCloudResponse) {
       pointCloudResponse = prefetchNext.pointCloudResponse;
       cameraResponse = prefetchNext.cameraResponse;
       prefetchNext = null;
-    } else {
+    }
+    if (!buf) {
       prefetchNext = null;
       [pointCloudResponse, cameraResponse] = await Promise.all([
         fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + currentFetchFrame + '/point_cloud'),
@@ -2301,39 +2305,34 @@ async function fetchNextFrame() {
       ]);
     }
     const tNet1 = performance.now();
-    
-    // Check for network errors
-    if (!pointCloudResponse) {
-      throw new Error('pointCloudResponse is null');
-    }
-    
-    // ✅ 检查点云请求是否成功
-    if (!pointCloudResponse.ok) {
-      // 404: frame not available — skip to next frame (non-keyframe or not yet processed)
-      if (pointCloudResponse.status === 404) {
+
+    // 验证响应
+    if (!buf && (!pointCloudResponse || !pointCloudResponse.ok)) {
+      if (pointCloudResponse && pointCloudResponse.status === 404) {
         console.log('[拉取] #' + currentFetchFrame + ' 404 跳过');
         currentFetchFrame++;
-        if (isFetchingFrames) {
-          scheduleNextFetch(100);
-        }
+        if (isFetchingFrames) scheduleNextFetch(100);
         return;
       }
-      addLog('帧 ' + currentFetchFrame + ' 请求失败: ' + pointCloudResponse.status, 'err');
+      addLog('帧 ' + currentFetchFrame + ' 请求失败: ' + (pointCloudResponse ? pointCloudResponse.status : '?'), 'err');
       currentFetchFrame++;
-      if (isFetchingFrames) {
-        scheduleNextFetch(100);
-      }
+      if (isFetchingFrames) scheduleNextFetch(100);
       return;
     }
-    
-    // 读取推理完成时间戳（服务端 Unix 秒）
-    const inferenceTime = parseFloat(pointCloudResponse.headers.get('X-Inference-Time')) || 0;
 
-    // ✅ 并行解析 camera JSON 和点云二进制
-    const [cameraResult, buf] = await Promise.all([
-      (cameraResponse && cameraResponse.ok) ? cameraResponse.json() : Promise.resolve(null),
-      pointCloudResponse.arrayBuffer()
-    ]);
+    var inferenceTime = 0;
+    if (pointCloudResponse) {
+      inferenceTime = parseFloat(pointCloudResponse.headers.get('X-Inference-Time')) || 0;
+    }
+
+    // 读取 body（队列已预读，实时 fetch 需等待）
+    if (!buf) {
+      if (cameraResponse && cameraResponse.ok) {
+        cameraResult = await cameraResponse.json();
+      }
+      buf = await pointCloudResponse.arrayBuffer();
+    }
+
     if (cameraResult && cameraResult.success && cameraResult.camera) {
       camerasData[currentFetchFrame] = cameraResult.camera;
       trajectoryDirty = true;
@@ -2407,11 +2406,11 @@ async function fetchNextFrame() {
           var nextIdx = highestIdx;
           var entry = { frameIndex: nextIdx, pointCloudResponse: null, cameraResponse: null };
           entry._promise = Promise.all([
-            fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + nextIdx + '/point_cloud'),
-            fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + nextIdx + '/camera')
+            fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + nextIdx + '/point_cloud').then(function (r) { entry._pcResp = r; return r.arrayBuffer(); }),
+            fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + nextIdx + '/camera').then(function (r) { entry._camResp = r; return r.json(); })
           ]).then(function (results) {
-            entry.pointCloudResponse = results[0];
-            entry.cameraResponse = results[1];
+            entry._pcBuf = results[0];
+            entry._camResult = results[1];
             entry._fetching = false;
             return results;
           }).catch(function (err) {
