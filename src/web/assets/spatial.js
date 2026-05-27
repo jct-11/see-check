@@ -2180,6 +2180,7 @@ let fetchNextFrameCallCount = 0;
 let fetchNextFrameActive = false;
 let fetchNextFramePending = 0;  // count of pending setTimeout callbacks
 let prefetchNext = null;  // { frameIndex, pointCloudResponse, cameraResponse }
+let prefetchQueue = [];   // 并发预取队列
 function scheduleNextFetch(delay) {
   fetchNextFramePending++;
   setTimeout(function() {
@@ -2272,7 +2273,21 @@ async function fetchNextFrame() {
   try {
     const tNet0 = performance.now();
     let pointCloudResponse, cameraResponse;
-    if (prefetchNext && prefetchNext.frameIndex === currentFetchFrame && prefetchNext.pointCloudResponse) {
+    // 先从预取队列取，再从单个预取取，最后才实时 fetch
+    var queued = null;
+    for (var qi = 0; qi < prefetchQueue.length; qi++) {
+      if (prefetchQueue[qi] && prefetchQueue[qi].frameIndex === currentFetchFrame) {
+        queued = prefetchQueue[qi];
+        prefetchQueue.splice(qi, 1);
+        break;
+      }
+    }
+    if (queued) {
+      if (queued._promise) { await queued._promise; }
+      pointCloudResponse = queued.pointCloudResponse;
+      cameraResponse = queued.cameraResponse;
+    }
+    if (!pointCloudResponse && prefetchNext && prefetchNext.frameIndex === currentFetchFrame && prefetchNext.pointCloudResponse) {
       pointCloudResponse = prefetchNext.pointCloudResponse;
       cameraResponse = prefetchNext.cameraResponse;
       prefetchNext = null;
@@ -2367,35 +2382,41 @@ async function fetchNextFrame() {
     console.log('[拉取] #' + (currentFetchFrame - 1) + ' 完成 ' + (tFetch1 - tFetch0).toFixed(0) + 'ms');
 
     // ✅ 流式模式：先检查状态再继续拉取，避免频繁请求
-    // 批量模式：预取下一帧，等预取完成后再触发下一次拉取
+    // 批量模式：并发预取多帧，减少串行等待
     if (isFetchingFrames) {
       if (totalFramesAvailable) {
-        if (currentFetchFrame < totalFramesAvailable) {
-          const nextIdx = currentFetchFrame;
-          const prefetchPromise = Promise.all([
+        // 清理队列中已过时或出错的条目
+        prefetchQueue = prefetchQueue.filter(function (e) { return e && !e._error && e.frameIndex >= currentFetchFrame; });
+        // 并发预取后续帧（一次最多 4 个并发）
+        var CONCURRENCY = 4;
+        var fetching = 0;
+        var highestIdx = currentFetchFrame - 1;
+        for (var pi = 0; pi < prefetchQueue.length; pi++) {
+          if (prefetchQueue[pi]._fetching) fetching++;
+          if (prefetchQueue[pi].frameIndex > highestIdx) highestIdx = prefetchQueue[pi].frameIndex;
+        }
+        while (fetching < CONCURRENCY && highestIdx + 1 < totalFramesAvailable) {
+          highestIdx++;
+          var nextIdx = highestIdx;
+          var entry = { frameIndex: nextIdx, pointCloudResponse: null, cameraResponse: null };
+          entry._promise = Promise.all([
             fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + nextIdx + '/point_cloud'),
             fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + nextIdx + '/camera')
           ]).then(function (results) {
-            if (prefetchNext && prefetchNext.frameIndex === nextIdx) {
-              prefetchNext.pointCloudResponse = results[0];
-              prefetchNext.cameraResponse = results[1];
-            }
+            entry.pointCloudResponse = results[0];
+            entry.cameraResponse = results[1];
+            entry._fetching = false;
             return results;
           }).catch(function (err) {
             console.warn('[预取] #' + nextIdx + ' 失败:', err.message);
-            prefetchNext = null;
+            entry._fetching = false;
+            entry._error = true;
           });
-          prefetchNext = { frameIndex: nextIdx, pointCloudResponse: null, cameraResponse: null, _promise: prefetchPromise };
-          // 等预取完成后再触发下一帧拉取
-          prefetchPromise.then(function () {
-            if (isFetchingFrames) {
-              scheduleNextFetch(0);
-            }
-          });
-        } else {
-          // 所有帧已拉取完成，触发最终检查
-          scheduleNextFetch(50);
+          entry._fetching = true;
+          prefetchQueue.push(entry);
+          fetching++;
         }
+        scheduleNextFetch(0);
       } else {
         scheduleNextFetch(100);
       }
