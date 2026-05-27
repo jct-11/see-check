@@ -18,6 +18,8 @@ import gc
 import pathlib
 
 # ── Paths ──
+if "HF_ENDPOINT" not in os.environ:
+    os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 DAV2_MODEL = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
 DATA_DIR = "/home/sscy/lingbot-map/stmem-main/data"
 DGSG_EXP_DIR = "/home/liangjiahua/dgsg-orin/experiments/mydata"
@@ -55,6 +57,7 @@ def find_best_frame(batch_dir):
 def load_model_depths(batch_dir, frame_idx):
     """Load DAv2 metric depth and lingbot-map predicted depth for a frame."""
     import cv2
+    from PIL import Image
 
     # ── Load RGB image ──
     rgb_path = batch_dir / "frames" / f"frame_{frame_idx:06d}.jpg"
@@ -76,7 +79,9 @@ def load_model_depths(batch_dir, frame_idx):
     device = 0 if torch.cuda.is_available() else -1
     t0 = time.time()
     pipe = pipeline("depth-estimation", model=DAV2_MODEL, device=device)
-    result = pipe(rgb)
+    # pipeline expects PIL Image, not cv2 numpy
+    rgb_pil = Image.fromarray(cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB))
+    result = pipe(rgb_pil)
     depth_metric = np.array(result["depth"], dtype=np.float32)  # HxW meters
     model_ms = (time.time() - t0) * 1000
     log(f"DAv2 inference: {model_ms:.0f}ms (device={'cuda' if device==0 else 'cpu'})")
