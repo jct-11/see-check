@@ -135,6 +135,7 @@ batch_status = {
     "total_points": 0,
     "error_message": "",
     "dgsg_status": "idle",  # idle → building → done → error
+    "scale_status": "idle",  # idle → calibrating → done → error
 }
 
 # 日志
@@ -370,6 +371,11 @@ def on_frame_callback(frame_idx, image_np, frame_output):
                         "w": orig_w,
                         "h": orig_h,
                     }, f)
+
+            # ── 保存 depth_conf (用于尺度校准选最优帧) ──
+            conf_dir = batch_dir / "conf"
+            conf_dir.mkdir(exist_ok=True)
+            np.save(str(conf_dir / f"frame_{frame_idx:06d}.npy"), _depth_conf_np.astype(np.float32))
 
             # ── 保存 point (置信度过滤后导出 npy) ──
             point_dir = batch_dir / "point"
@@ -742,9 +748,12 @@ async def upload_frames(batch_id: str, files: list[UploadFile] = File(...)):
     }
 
 def _auto_dgsg_pipeline(batch_id: str):
-    """后台线程：推理完成后自动跑 dgsg 建图管线 + convert 转换 + 启动 viewer"""
+    """后台线程：推理完成后自动跑 dgsg 建图管线 + 尺度校准 + convert 转换"""
     pipeline_script = "/home/sscy/lingbot-map/stmem-main/run_dgsg_pipeline.sh"
+    scale_script = "/home/sscy/lingbot-map/stmem-main/scripts/scale_calibrate.py"
     convert_script = "/home/sscy/lingbot-map/stmem-main/scripts/convert_memory_pc.py"
+    conda_python = "/home/sscy/conda_envs/lingbot-map/bin/python3"
+    dgsg_exp_dir = "/home/liangjiahua/dgsg-orin/experiments/mydata"
     scene_name = "lingbot"  # 固定输出到 lingbot 目录
     update_status(dgsg_status="building")
     try:
@@ -765,6 +774,35 @@ def _auto_dgsg_pipeline(batch_id: str):
         if process.returncode == 0:
             update_status(dgsg_status="done")
             write_log("[DGSG] 建图管线完成", "ok")
+
+            # ── 米制尺度校准 ──
+            update_status(scale_status="calibrating")
+            write_log(f"[SCALE] 米制尺度校准: batch={batch_id}", "info")
+            try:
+                scale_process = subprocess.run(
+                    [conda_python, scale_script, batch_id, scene_name],
+                    capture_output=True, text=True, timeout=120
+                )
+                for line in scale_process.stdout.strip().split('\n'):
+                    if line.strip():
+                        write_log(f"[SCALE] {line.strip()}", "info")
+                if scale_process.returncode != 0:
+                    write_log(f"[SCALE] 校准失败 (rc={scale_process.returncode}): {scale_process.stderr[:300]}", "err")
+                    update_status(scale_status="error")
+                else:
+                    # Read scale result
+                    meta_path = Path(dgsg_exp_dir) / scene_name / "scale_meta.json"
+                    if meta_path.exists():
+                        meta = json.loads(meta_path.read_text())
+                        write_log(f"[SCALE] s={meta['scale_factor']:.6f} (method={meta['method']}, conf={meta['confidence']:.2f})", "ok")
+                    update_status(scale_status="done")
+                    write_log("[SCALE] 米制尺度校准完成", "ok")
+            except subprocess.TimeoutExpired:
+                write_log("[SCALE] 校准超时（>2分钟），继续使用未校准数据", "err")
+                update_status(scale_status="error")
+            except Exception as e:
+                write_log(f"[SCALE] 校准异常: {e}", "err")
+                update_status(scale_status="error")
 
             # ── 建图成功后自动 convert ──
             write_log(f"[CONVERT] 开始转换点云数据: scene={scene_name}", "info")
