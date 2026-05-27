@@ -2366,14 +2366,12 @@ async function fetchNextFrame() {
     console.log('[拉取] #' + (currentFetchFrame - 1) + ' 完成 ' + (tFetch1 - tFetch0).toFixed(0) + 'ms');
 
     // ✅ 流式模式：先检查状态再继续拉取，避免频繁请求
-    // 批量模式：立即继续拉取下一帧
+    // 批量模式：预取下一帧，等预取完成后再触发下一次拉取
     if (isFetchingFrames) {
       if (totalFramesAvailable) {
-        // 预取下一帧：网络 IO 与渲染重叠
         if (currentFetchFrame < totalFramesAvailable) {
           const nextIdx = currentFetchFrame;
-          prefetchNext = { frameIndex: nextIdx, pointCloudResponse: null, cameraResponse: null };
-          Promise.all([
+          const prefetchPromise = Promise.all([
             fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + nextIdx + '/point_cloud'),
             fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + nextIdx + '/camera')
           ]).then(function (results) {
@@ -2381,12 +2379,22 @@ async function fetchNextFrame() {
               prefetchNext.pointCloudResponse = results[0];
               prefetchNext.cameraResponse = results[1];
             }
+            return results;
           }).catch(function (err) {
             console.warn('[预取] #' + nextIdx + ' 失败:', err.message);
             prefetchNext = null;
           });
+          prefetchNext = { frameIndex: nextIdx, pointCloudResponse: null, cameraResponse: null, _promise: prefetchPromise };
+          // 等预取完成后再触发下一帧拉取
+          prefetchPromise.then(function () {
+            if (isFetchingFrames) {
+              scheduleNextFetch(0);
+            }
+          });
+        } else {
+          // 所有帧已拉取完成，触发最终检查
+          scheduleNextFetch(50);
         }
-        scheduleNextFetch(0);
       } else {
         scheduleNextFetch(100);
       }
