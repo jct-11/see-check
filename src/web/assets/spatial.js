@@ -2446,12 +2446,22 @@ function startDgsgStatusPolling() {
         if (data.dgsg_status) {
           updateStatus({ dgsg_status: data.dgsg_status });
         }
+        if (data.scale_status) {
+          updateStatus({ scale_status: data.scale_status });
+        }
         if (data.dgsg_status === 'done') {
-          if (!semanticReady) {
-            semanticReady = true;
-            _checkAutoReplace();
+          // Wait for scale calibration (if configured) before loading
+          const scaleDone = !data.scale_status || data.scale_status === 'done' || data.scale_status === 'error';
+          if (scaleDone) {
+            if (!semanticReady) {
+              semanticReady = true;
+              if (data.scale_factor) {
+                updateStatus({ scale_factor: data.scale_factor, scale_confidence: data.scale_confidence });
+              }
+              _checkAutoReplace();
+            }
+            return;
           }
-          return;
         }
         if (data.dgsg_status === 'error') {
           return;
