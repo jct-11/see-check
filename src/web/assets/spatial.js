@@ -1136,7 +1136,7 @@ function _makeDistanceLabel(text) {
   const canvas = document.createElement('canvas');
   canvas.width = 256; canvas.height = 64;
   const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#ffffff';
+  ctx.fillStyle = '#000000';
   ctx.font = 'bold 28px monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';

@@ -136,6 +136,8 @@ batch_status = {
     "error_message": "",
     "dgsg_status": "idle",  # idle → building → done → error
     "scale_status": "idle",  # idle → calibrating → done → error
+    "scale_factor": None,
+    "scale_confidence": None,
 }
 
 # 日志
@@ -794,6 +796,8 @@ def _auto_dgsg_pipeline(batch_id: str):
                     meta_path = Path(dgsg_exp_dir) / scene_name / "scale_meta.json"
                     if meta_path.exists():
                         meta = json.loads(meta_path.read_text())
+                        update_status(scale_factor=meta["scale_factor"],
+                                      scale_confidence=meta["confidence"])
                         write_log(f"[SCALE] s={meta['scale_factor']:.6f} (method={meta['method']}, conf={meta['confidence']:.2f})", "ok")
                     update_status(scale_status="done")
                     write_log("[SCALE] 米制尺度校准完成", "ok")
