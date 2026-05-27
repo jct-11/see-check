@@ -56,6 +56,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Inference-Time"],
 )
 
 # 配置
@@ -117,6 +118,7 @@ def add_to_frame_cache(frame_idx, points, colors, confs, camera):
         "colors": np.asarray(colors, dtype=np.float32),
         "confs": np.asarray(confs, dtype=np.float32),
         "camera": camera,
+        "inference_time": time.time(),
     }
     cache_frame_order.append(frame_idx)
     
@@ -391,8 +393,8 @@ def on_frame_callback(frame_idx, image_np, frame_output):
         processed = len(frame_cache)
         update_status(processed_frames=processed)
 
-        if processed % 10 == 0:
-            write_log(f"已处理 {processed} 帧", "info")
+        if processed % 5 == 0:
+            write_log(f"推理: {processed} 帧", "info")
 
     except Exception as e:
         write_log(f"帧 {frame_idx} 处理失败: {e}", "err")
@@ -400,7 +402,7 @@ def on_frame_callback(frame_idx, image_np, frame_output):
 
 def process_scale_frames(frames_dir, num_scale_frames=NUM_SCALE_FRAMES):
     """处理前N帧作为scale frames（Phase 1）"""
-    write_log(f"Phase 1: 处理 {num_scale_frames} 个scale frames...", "info")
+    write_log(f"初始化: 处理前 {num_scale_frames} 帧...", "info")
     
     # 获取所有帧路径
     exts = (".jpg", ".jpeg", ".png")
@@ -466,7 +468,7 @@ def process_scale_frames(frames_dir, num_scale_frames=NUM_SCALE_FRAMES):
         model_state["known_paths"].add(scale_paths[i])
     
     model_state["frame_idx"] = num_scale_frames
-    write_log(f"Phase 1 完成，已处理 {num_scale_frames} 帧", "ok")
+    write_log(f"初始化完成, {num_scale_frames} 帧", "ok")
     
     del scale_output, scale_tensor
     return True
@@ -503,20 +505,19 @@ def frame_monitor_thread():
                     all_paths.extend(glob.glob(str(frames_dir / f"*{ext}")))
                 all_paths = sorted(set(all_paths))
                 
-                write_log(f"Phase 1 - 扫描帧文件夹: {frames_dir}, 找到 {len(all_paths)} 帧, 需要 {NUM_SCALE_FRAMES} 帧", "info")
-                
+                write_log(f"扫描帧: {len(all_paths)} 帧 (需 {NUM_SCALE_FRAMES})", "info")
+
                 if len(all_paths) >= NUM_SCALE_FRAMES:
-                    write_log(f"Phase 1 - 开始处理 {NUM_SCALE_FRAMES} 个scale frames...", "info")
                     success = process_scale_frames(frames_dir, NUM_SCALE_FRAMES)
                     if success:
                         scale_processed = True
-                        write_log(f"Scale frames处理完成，开始逐帧处理...", "ok")
+                        write_log("初始化完成, 开始逐帧推理", "ok")
                     else:
-                        write_log(f"Scale frames处理失败，重试...", "err")
+                        write_log("初始化失败, 重试...", "err")
                         time.sleep(0.5)
                         continue
                 else:
-                    write_log(f"Phase 1 - 帧数不足: 需要 {NUM_SCALE_FRAMES} 帧，当前 {len(all_paths)} 帧", "info")
+                    write_log(f"帧数不足: {len(all_paths)}/{NUM_SCALE_FRAMES}", "info")
                     time.sleep(0.5)
                     continue
             
@@ -527,20 +528,17 @@ def frame_monitor_thread():
                 current_paths.extend(glob.glob(str(frames_dir / f"*{ext}")))
             current_paths = sorted(set(current_paths))
             
-            write_log(f"Phase 2 - 当前帧总数: {len(current_paths)}, 已处理帧索引: {model_state['frame_idx']}, 已知路径数: {len(model_state['known_paths'])}", "info")
-            
             new_paths = [p for p in current_paths if p not in model_state["known_paths"]]
-            
+
             if new_paths:
-                write_log(f"Phase 2 - 发现 {len(new_paths)} 个新帧: {[os.path.basename(p) for p in new_paths]}", "info")
-                write_log(f"Phase 2 - 开始处理...", "info")
+                write_log(f"新帧: {len(new_paths)} 个", "info")
                 
                 for path in new_paths:
                     if model_state["stop_event"].is_set():
                         break
                     
                     if model_state["max_images"] is not None and model_state["frame_idx"] >= model_state["max_images"]:
-                        write_log(f"达到最大图片数 {model_state['max_images']}，停止处理", "info")
+                        write_log(f"已达最大帧数 {model_state['max_images']}, 停止", "info")
                         model_state["is_streaming"] = False
                         update_status(status="completed", processed_frames=model_state["frame_idx"])
                         break
@@ -609,10 +607,10 @@ def frame_monitor_thread():
                     
                     del frame_output, frame_image
                 
-                write_log(f"处理完成，共 {model_state['frame_idx']} 帧", "ok")
+                write_log(f"推理完成, 共 {model_state['frame_idx']} 帧", "ok")
             else:
                 if model_state.get("finish_requested"):
-                    write_log(f"无新帧且已请求结束，进入空闲等待，已处理 {model_state['frame_idx']} 帧", "ok")
+                    write_log(f"推理结束, 共 {model_state['frame_idx']} 帧", "ok")
                     model_state["is_streaming"] = False
             
             time.sleep(0.5)
@@ -1002,7 +1000,11 @@ async def get_frame_point_cloud(batch_id: str, frame_index: int):
     # 二进制编码传输（无 base64 膨胀）
     n = np.uint32(len(points_arr))
     buf = n.tobytes() + points_arr.tobytes() + colors_arr.tobytes() + confs_arr.tobytes()
-    return Response(content=buf, media_type="application/octet-stream")
+    return Response(
+        content=buf,
+        media_type="application/octet-stream",
+        headers={"X-Inference-Time": str(cached["inference_time"])},
+    )
 
 @app.get("/batch/{batch_id}/frame/{frame_index}/camera")
 async def get_frame_camera(batch_id: str, frame_index: int):

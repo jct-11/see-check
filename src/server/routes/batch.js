@@ -21,12 +21,16 @@ function registerBatchRoutes(router) {
     };
 
     const proxyReq = http.request(options, (proxyRes) => {
-      res.writeHead(proxyRes.statusCode, {
+      const resHeaders = {
         'Content-Type': proxyRes.headers['content-type'] || 'application/json',
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type',
-      });
+      };
+      if (proxyRes.headers['x-inference-time']) {
+        resHeaders['X-Inference-Time'] = proxyRes.headers['x-inference-time'];
+      }
+      res.writeHead(proxyRes.statusCode, resHeaders);
       proxyRes.pipe(res);
     });
 
