@@ -2379,7 +2379,9 @@ async function fetchNextFrame() {
     currentFetchFrame++;
 
     const tFetch1 = performance.now();
-    console.log('[拉取] #' + (currentFetchFrame - 1) + ' 完成 ' + (tFetch1 - tFetch0).toFixed(0) + 'ms');
+    var netMs = (tNet1 - tNet0).toFixed(0);
+    var otherMs = (tFetch1 - tNet1).toFixed(0);
+    console.log('[拉取] #' + (currentFetchFrame - 1) + ' 完成 ' + (tFetch1 - tFetch0).toFixed(0) + 'ms (网络' + netMs + ' + 处理' + otherMs + 'ms)');
 
     // ✅ 流式模式：先检查状态再继续拉取，避免频繁请求
     // 批量模式：并发预取多帧，减少串行等待
