@@ -1629,14 +1629,22 @@ function animate() {
 
   // Keep ring markers at constant screen size
   if (memoryActive && memoryRingSprites.length > 0) {
-    const RING_PX = 45; // target screen radius in pixels
+    const RING_PX = 45;
+    const LABEL_PX = 150;
     const halfH = renderer.domElement.height / 2;
     const fovRad = camera3d.fov * Math.PI / 360;
-    const screenFactor = RING_PX * Math.tan(fovRad) / halfH;
+    const ringFactor = RING_PX * Math.tan(fovRad) / halfH;
+    const labelFactor = LABEL_PX * Math.tan(fovRad) / halfH;
     for (const ring of memoryRingSprites) {
       const dist = camera3d.position.distanceTo(ring.position);
-      const s = screenFactor * dist;
-      ring.scale.set(s, s, 1);
+      ring.scale.set(ringFactor * dist, ringFactor * dist, 1);
+    }
+    for (const [idx, entry] of selectedObjects) {
+      if (entry.labelSprite) {
+        const dist = camera3d.position.distanceTo(entry.labelSprite.position);
+        const sw = labelFactor * dist;
+        entry.labelSprite.scale.set(sw, sw * 0.3125, 1); // 80/256 canvas aspect
+      }
     }
   }
 
