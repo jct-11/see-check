@@ -32,13 +32,30 @@ def log(msg):
     print(f"[scale {ts}] {msg}", flush=True)
 
 
-def find_best_frames(batch_dir, k=5):
-    """Find top-K frames with highest mean depth_conf."""
+def find_best_frames(batch_dir, k=None):
+    """Find top-K frames with highest mean depth_conf.
+    K is auto-computed from total frame count if not specified:
+      N < 50  → K=3
+      N < 200 → K=5
+      N < 500 → K=7
+      N >=500 → K=10
+    """
     conf_dir = batch_dir / "conf"
     conf_files = sorted(conf_dir.glob("frame_*.npy"))
     if not conf_files:
         log("WARNING: no conf files found, using frame 0 only")
         return [(0, 0.0)]
+
+    if k is None:
+        n = len(conf_files)
+        if n < 50:
+            k = 3
+        elif n < 200:
+            k = 5
+        elif n < 500:
+            k = 7
+        else:
+            k = 10
 
     scored = []
     for cf in conf_files:
@@ -52,7 +69,7 @@ def find_best_frames(batch_dir, k=5):
 
     scored.sort(key=lambda x: -x[1])
     top = scored[:k]
-    log(f"Top-{k} frames by conf: {[(idx, f'{conf:.3f}') for idx, conf in top]}")
+    log(f"Top-{k} frames (from {len(conf_files)} total): {[(idx, f'{conf:.3f}') for idx, conf in top]}")
     return top
 
 
@@ -128,7 +145,7 @@ def main():
 
     batch_id = sys.argv[1]
     scene_name = sys.argv[2]
-    k = 5
+    k = None  # auto: derived from total frame count
     for i, arg in enumerate(sys.argv):
         if arg == "--k" and i + 1 < len(sys.argv):
             k = int(sys.argv[i + 1])
@@ -140,7 +157,8 @@ def main():
         log(f"ERROR: npz not found: {npz_path}")
         sys.exit(1)
 
-    log(f"batch_id={batch_id} scene={scene_name} k={k}")
+    k_str = "auto" if k is None else str(k)
+    log(f"batch_id={batch_id} scene={scene_name} k={k_str}")
     log(f"npz_path={npz_path}")
 
     # ── 1. Find top-K frames by confidence ──
