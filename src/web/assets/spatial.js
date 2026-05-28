@@ -1561,14 +1561,14 @@ async function triggerSemanticReplacement() {
 
   // Dispose streaming point cloud objects
   for (const key in framePointsObjects) {
-    const obj = framePointsObjects[key];
-    if (obj) {
-      scene.remove(obj);
-      disposeObject(obj);
-      delete framePointsObjects[key];
+    const entry = framePointsObjects[key];
+    if (entry && entry.points) {
+      scene.remove(entry.points);
+      disposeObject(entry.points);
     }
+    delete framePointsObjects[key];
   }
-  framePointsObjects = {};
+  framePointsObjects = [];
 
   memoryActive = true;
   cameraFollowEnabled = false;
