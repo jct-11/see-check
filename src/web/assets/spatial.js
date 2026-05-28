@@ -1294,7 +1294,7 @@ async function loadMemoryPointCloud() {
     _updateLoading('正在下载点云数据...');
     console.log('[Memory] fetch start: /assets/memory_pc.bin');
 
-    const binResp = await fetch('/assets/memory_pc.bin');
+    const binResp = await fetch('/assets/memory_pc.bin?_=' + Date.now());
     if (!binResp.ok) throw new Error('memory_pc.bin not found (status ' + binResp.status + ')');
     const buf = await binResp.arrayBuffer();
     const fetchMs = (performance.now() - tFetch).toFixed(0);
@@ -1336,6 +1336,12 @@ async function loadMemoryPointCloud() {
       sizeAttenuation: true,
     });
 
+    // Remove old point cloud if re-replacing (H2 fix)
+    if (memoryPointCloud) {
+      memoryScene.remove(memoryPointCloud);
+      disposeObject(memoryPointCloud);
+      memoryPointCloud = null;
+    }
     memoryPointCloud = new THREE.Points(geom, mat);
     memoryScene.add(memoryPointCloud);
 
@@ -1536,6 +1542,16 @@ async function triggerSemanticReplacement() {
 
   updateStatus({ dgsg_status: 'loading' });
 
+  // Clean old semantic objects before loading new ones (H2 fix)
+  memoryRingSprites.forEach(s => { memoryScene.remove(s); disposeObject(s); });
+  memoryRingSprites = [];
+  memoryLabelSprites.forEach(s => { memoryScene.remove(s); disposeObject(s); });
+  memoryLabelSprites = [];
+  for (const [idx, entry] of selectedObjects) {
+    if (entry.labelSprite) { memoryScene.remove(entry.labelSprite); disposeObject(entry.labelSprite); }
+  }
+  selectedObjects.clear();
+  memorySceneLoaded = false;
   await loadMemoryPointCloud();
   if (!memorySceneLoaded) {
     updateStatus({ dgsg_status: 'error' });
