@@ -665,7 +665,12 @@ async def start_inference(batch_id: str, body: dict):
             status_code=409,
             detail="当前有推理任务正在运行，请先结束当前任务"
         )
-    
+
+    # 按需加载模型（上次推理完成后已卸载释放显存）
+    if model_state["model"] is None:
+        write_log("加载 lingbot-map 模型...", "info")
+        model_state["model"], model_state["device"] = load_model()
+
     model_state["current_batch_id"] = batch_id
     model_state["frame_idx"] = 0
     model_state["keyframe_interval"] = ki
@@ -868,6 +873,14 @@ async def finish_inference(batch_id: str):
     )
     
     write_log(f"推理完成，共 {total_processed} 帧，{total_points} 点", "ok")
+
+    # 释放模型显存给 dgsg 建图管线使用
+    if model_state["model"] is not None:
+        write_log("释放 lingbot-map 模型显存...", "info")
+        del model_state["model"]
+        model_state["model"] = None
+        torch.cuda.empty_cache()
+        write_log(f"模型已卸载，可用显存: {torch.cuda.mem_get_info()[0] / 1e9:.1f} GB", "ok")
 
     # 更新 latest 软链接，始终指向最新 batch
     latest_link = DATA_DIR / "latest"
