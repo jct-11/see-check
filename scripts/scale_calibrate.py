@@ -49,13 +49,13 @@ def find_best_frames(batch_dir, k=None):
     if k is None:
         n = len(conf_files)
         if n < 50:
-            k = 3
-        elif n < 200:
             k = 5
-        elif n < 500:
-            k = 7
-        else:
+        elif n < 200:
             k = 10
+        elif n < 500:
+            k = 15
+        else:
+            k = 20
 
     scored = []
     for cf in conf_files:
