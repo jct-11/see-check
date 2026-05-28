@@ -1338,9 +1338,11 @@ async function loadMemoryPointCloud() {
 
     // Remove old point cloud if re-replacing (H2 fix)
     if (memoryPointCloud) {
+      console.log('[DEBUG-clean] loadMemoryPointCloud: removing old memoryPointCloud, scene children before:', memoryScene.children.length);
       memoryScene.remove(memoryPointCloud);
       disposeObject(memoryPointCloud);
       memoryPointCloud = null;
+      console.log('[DEBUG-clean] loadMemoryPointCloud: scene children after remove:', memoryScene.children.length);
     }
     memoryPointCloud = new THREE.Points(geom, mat);
     memoryScene.add(memoryPointCloud);
@@ -1543,15 +1545,23 @@ async function triggerSemanticReplacement() {
   updateStatus({ dgsg_status: 'loading' });
 
   // Clean old semantic objects before loading new ones (H2 fix)
+  console.log('[DEBUG-clean] triggerSemanticReplacement: cleaning — scene children before:', memoryScene.children.length);
   memoryRingSprites.forEach(s => { memoryScene.remove(s); disposeObject(s); });
   memoryRingSprites = [];
   memoryLabelSprites.forEach(s => { memoryScene.remove(s); disposeObject(s); });
   memoryLabelSprites = [];
+  _updateDistanceLines();
   for (const [idx, entry] of selectedObjects) {
     if (entry.labelSprite) { memoryScene.remove(entry.labelSprite); disposeObject(entry.labelSprite); }
   }
   selectedObjects.clear();
+  if (memoryPointCloud) {
+    memoryScene.remove(memoryPointCloud);
+    disposeObject(memoryPointCloud);
+    memoryPointCloud = null;
+  }
   memorySceneLoaded = false;
+  console.log('[DEBUG-clean] triggerSemanticReplacement: scene children after:', memoryScene.children.length);
   await loadMemoryPointCloud();
   if (!memorySceneLoaded) {
     updateStatus({ dgsg_status: 'error' });
@@ -2868,6 +2878,7 @@ function startSpatialCapture() {
     memoryActive = false;
 
     // Dispose old semantic point cloud if re-capturing
+    console.log('[DEBUG-clean] startSpatialCapture: scene children before:', memoryScene.children.length);
     if (memoryPointCloud) {
       memoryScene.remove(memoryPointCloud);
       disposeObject(memoryPointCloud);
@@ -2877,12 +2888,14 @@ function startSpatialCapture() {
     memoryLabelSprites = [];
     memoryRingSprites.forEach(s => memoryScene.remove(s));
     memoryRingSprites = [];
+    _updateDistanceLines();
     // Clear selection state
     for (const [idx, entry] of selectedObjects) {
       if (entry.labelSprite) { memoryScene.remove(entry.labelSprite); disposeObject(entry.labelSprite); }
       _restoreObjectColors(idx);
     }
     selectedObjects.clear();
+    console.log('[DEBUG-clean] startSpatialCapture: scene children after:', memoryScene.children.length);
     memoryObjIdx = null;
     memoryOriginalColors = null;
     memorySceneLoaded = false;
