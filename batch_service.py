@@ -835,19 +835,34 @@ def _auto_dgsg_pipeline(batch_id: str):
             update_status(dgsg_status="done")
             write_log("[DGSG] 建图管线完成", "ok")
 
-            # ── Handle scale result ──
-            if scale_rc == 0:
-                meta_path = Path(dgsg_exp_dir) / scene_name / "scale_meta.json"
-                if meta_path.exists():
-                    meta = json.loads(meta_path.read_text())
-                    update_status(scale_factor=meta["scale_factor"],
-                                  scale_confidence=meta["confidence"])
-                    write_log(f"[SCALE] s={meta['scale_factor']:.6f} (method={meta['method']}, conf={meta['confidence']:.2f}, frames={meta.get('num_frames', '?')})", "ok")
+            # ── Apply scale calibration result ──
+            result_path = Path(dgsg_exp_dir) / scene_name / "scale_result.json"
+            if scale_rc == 0 and result_path.exists():
+                meta = json.loads(result_path.read_text())
+                s = meta["scale_factor"]
+                if s != 1.0:
+                    npz_path = Path(dgsg_exp_dir) / scene_name / "params_with_idx.npz"
+                    if npz_path.exists():
+                        write_log(f"[SCALE] Scaling npz by s={s:.6f}...", "info")
+                        data = np.load(str(npz_path))
+                        means3D = data["means3D"].astype(np.float64) * s
+                        np.savez_compressed(str(npz_path),
+                            means3D=means3D.astype(np.float32),
+                            rgb_colors=data["rgb_colors"],
+                            object_idx=data["object_idx"])
+                        write_log(f"[SCALE] npz scaled OK", "ok")
+                update_status(scale_factor=s, scale_confidence=meta["confidence"])
+                write_log(f"[SCALE] s={s:.6f} (method={meta['method']}, conf={meta['confidence']:.2f}, frames={meta.get('num_frames', '?')})", "ok")
+                # Rename result to meta (mark as applied)
+                result_path.rename(Path(dgsg_exp_dir) / scene_name / "scale_meta.json")
                 update_status(scale_status="done")
                 write_log("[SCALE] 米制尺度校准完成", "ok")
             else:
-                scale_err = scale_proc.stderr.read().strip()[:500] if scale_proc.stderr else ""
-                write_log(f"[SCALE] 校准失败 (rc={scale_rc}): {scale_err}", "err")
+                if scale_rc != 0:
+                    scale_err = scale_proc.stderr.read().strip()[:500] if scale_proc.stderr else ""
+                    write_log(f"[SCALE] 校准失败 (rc={scale_rc}): {scale_err}", "err")
+                else:
+                    write_log(f"[SCALE] 校准结果文件不存在，跳过", "err")
                 update_status(scale_status="error")
 
             # ── 建图成功后自动 convert ──

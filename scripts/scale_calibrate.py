@@ -163,11 +163,8 @@ def main():
             log(f"ERROR: batch {batch_id} not found and no latest symlink")
             sys.exit(1)
 
-    npz_path = pathlib.Path(DGSG_EXP_DIR) / scene_name / "params_with_idx.npz"
-
-    if not npz_path.exists():
-        log(f"ERROR: npz not found: {npz_path}")
-        sys.exit(1)
+    exp_dir = pathlib.Path(DGSG_EXP_DIR) / scene_name
+    exp_dir.mkdir(parents=True, exist_ok=True)
 
     k_str = "auto" if k is None else str(k)
     log(f"batch_id={batch_id} scene={scene_name} k={k_str}")
@@ -256,22 +253,7 @@ def main():
 
     log(f"Final s = {s:.6f} (method={method}, conf={conf:.2f}, from {len(s_values)} frames: {[f'{v:.3f}' for v in s_values]})")
 
-    # ── 3. Scale means3D and save ──
-    log("Loading npz for scaling...")
-    data = np.load(npz_path)
-    means3D = data["means3D"].astype(np.float64)
-    means3D *= s
-    means3D = means3D.astype(np.float32)
-
-    log(f"Scaling means3D by s={s:.6f}, saving...")
-    np.savez_compressed(
-        npz_path,
-        means3D=means3D,
-        rgb_colors=data["rgb_colors"],
-        object_idx=data["object_idx"]
-    )
-
-    # ── 4. Write scale metadata ──
+    # ── 3. Save scale result JSON (npz scaling deferred to batch_service after DGSG) ──
     meta = {
         "scale_factor": float(s),
         "method": method,
@@ -280,8 +262,8 @@ def main():
         "frames": frame_results,
         "elapsed_sec": round(time.time() - t0, 2),
     }
-    meta_path = npz_path.parent / "scale_meta.json"
-    with open(meta_path, "w") as f:
+    result_path = exp_dir / "scale_result.json"
+    with open(result_path, "w") as f:
         json.dump(meta, f, indent=2)
 
     log(f"Done. s={s:.6f}, method={method}, conf={conf:.2f}, elapsed={meta['elapsed_sec']}s")
