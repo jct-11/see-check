@@ -755,164 +755,119 @@ async def upload_frames(batch_id: str, files: list[UploadFile] = File(...)):
     }
 
 def _auto_dgsg_pipeline(batch_id: str):
-    """后台线程：推理完成后自动跑 dgsg 建图管线 + 尺度校准 + convert 转换"""
+    """后台线程：尺度校准 → 缩放数据 → DGSG 建图 → convert"""
     pipeline_script = "/home/sscy/lingbot-map/stmem-main/run_dgsg_pipeline.sh"
-    scale_script = "/home/sscy/lingbot-map/stmem-main/scripts/scale_calibrate.py"
+    scale_cal_script = "/home/sscy/lingbot-map/stmem-main/scripts/scale_calibrate.py"
+    scale_data_script = "/home/sscy/lingbot-map/stmem-main/scripts/scale_data.py"
     convert_script = "/home/sscy/lingbot-map/stmem-main/scripts/convert_memory_pc.py"
     conda_python = "/home/sscy/conda_envs/lingbot-map/bin/python3"
     dgsg_exp_dir = "/home/liangjiahua/dgsg-orin/experiments/mydata"
-    scene_name = "lingbot"  # 固定输出到 lingbot 目录
-    update_status(dgsg_status="building")
+    scene_name = "lingbot"
+
     try:
+        # ── Phase 1: Scale calibration via DAv2 ──
+        update_status(scale_status="calibrating")
+        write_log(f"[SCALE] 米制尺度校准启动: batch={batch_id}", "info")
+        scale_proc = subprocess.run(
+            [conda_python, scale_cal_script, batch_id, scene_name],
+            capture_output=True, text=True, timeout=300
+        )
+        for line in scale_proc.stdout.strip().split('\n'):
+            if line.strip():
+                print(f"[SCALE] {line.strip()}", flush=True)
+                write_log(f"[SCALE] {line.strip()}", "info")
+        if scale_proc.stderr:
+            for line in scale_proc.stderr.strip().split('\n'):
+                if line.strip():
+                    write_log(f"[SCALE] {line.strip()}", "info")
+
+        if scale_proc.returncode != 0:
+            write_log(f"[SCALE] 校准失败 (rc={scale_proc.returncode})，继续使用未校准数据", "err")
+            update_status(scale_status="error")
+            s = 1.0
+        else:
+            result_path = Path(dgsg_exp_dir) / scene_name / "scale_result.json"
+            if result_path.exists():
+                meta = json.loads(result_path.read_text())
+                s = meta["scale_factor"]
+                update_status(scale_factor=s, scale_confidence=meta["confidence"])
+                write_log(f"[SCALE] s={s:.6f} (method={meta['method']}, conf={meta['confidence']:.2f}, frames={meta.get('num_frames', '?')})", "ok")
+                result_path.rename(Path(dgsg_exp_dir) / scene_name / "scale_meta.json")
+                update_status(scale_status="done")
+            else:
+                write_log("[SCALE] 校准结果文件不存在", "err")
+                update_status(scale_status="error")
+                s = 1.0
+
+        # ── Phase 2: Scale inference data + archive originals ──
+        if s != 1.0:
+            write_log(f"[SCALE_DATA] 缩放 depth/poses/point ×{s:.6f}，存档原始数据...", "info")
+            sd_proc = subprocess.run(
+                [conda_python, scale_data_script, batch_id, str(s)],
+                capture_output=True, text=True, timeout=120
+            )
+            for line in sd_proc.stdout.strip().split('\n'):
+                if line.strip():
+                    print(f"[SCALE_DATA] {line.strip()}", flush=True)
+                    write_log(f"[SCALE_DATA] {line.strip()}", "info")
+            if sd_proc.returncode != 0:
+                write_log(f"[SCALE_DATA] 数据缩放失败 (rc={sd_proc.returncode}): {sd_proc.stderr[:300]}", "err")
+            else:
+                write_log("[SCALE_DATA] 数据缩放完成", "ok")
+
+        # ── Phase 3: DGSG pipeline (with scaled data) ──
+        update_status(dgsg_status="building")
         write_log(f"[DGSG] 建图管线启动: batch={batch_id} → scene={scene_name}", "info")
         dgsg_proc = subprocess.Popen(
             ["bash", pipeline_script, batch_id, scene_name],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1
         )
+        for line in dgsg_proc.stdout:
+            line = line.rstrip('\n\r')
+            if line:
+                print(f"[DGSG] {line}", flush=True)
+                write_log(f"[DGSG] {line}", "info")
+        dgsg_proc.wait(timeout=3600)
 
-        # ── 米制尺度校准（与 DGSG 并行）──
-        update_status(scale_status="calibrating")
-        write_log(f"[SCALE] 米制尺度校准启动（与建图并行）: batch={batch_id}", "info")
-        scale_proc = subprocess.Popen(
-            [conda_python, scale_script, batch_id, scene_name],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, bufsize=1
-        )
-
-        # Read both stdout in parallel using a simple polling loop
-        dgsg_lines = []
-        scale_lines = []
-        dgsg_done = False
-        scale_done = False
-        dgsg_fd = dgsg_proc.stdout.fileno()
-        scale_fd = scale_proc.stdout.fileno()
-
-        while not (dgsg_done and scale_done):
-            fds = []
-            if not dgsg_done:
-                fds.append(dgsg_fd)
-            if not scale_done:
-                fds.append(scale_fd)
-
-            if not fds:
-                break
-
-            readable, _, _ = select.select(fds, [], [], 1.0)
-            for fd in readable:
-                if fd == dgsg_fd:
-                    line = dgsg_proc.stdout.readline()
-                    if line:
-                        line = line.rstrip('\n\r')
-                        dgsg_lines.append(line)
-                        if line:
-                            print(f"[DGSG] {line}", flush=True)
-                            write_log(f"[DGSG] {line}", "info")
-                    else:
-                        dgsg_done = True
-                elif fd == scale_fd:
-                    line = scale_proc.stdout.readline()
-                    if line:
-                        line = line.rstrip('\n\r')
-                        scale_lines.append(line)
-                        if line:
-                            print(f"[SCALE] {line}", flush=True)
-                            write_log(f"[SCALE] {line}", "info")
-                    else:
-                        scale_done = True
-
-            # Check if processes exited
-            if dgsg_proc.poll() is not None:
-                dgsg_done = True
-            if scale_proc.poll() is not None:
-                scale_done = True
-
-        dgsg_rc = dgsg_proc.wait(timeout=3600)
-        scale_rc = scale_proc.wait(timeout=120)
-
-        # ── Handle DGSG result ──
-        if dgsg_rc == 0:
+        if dgsg_proc.returncode == 0:
             update_status(dgsg_status="done")
             write_log("[DGSG] 建图管线完成", "ok")
-
-            # ── Archive poses/depth/rgb to datasave ──
-            try:
-                dgsg_data_dir = Path("/home/liangjiahua/dgsg-orin/data/mydata") / scene_name
-                ts = time.strftime("%Y%m%d_%H%M%S")
-                archive_dir = Path("/home/sscy/lingbot-map/stmem-main/datasave") / ts
-                for sub in ["poses", "depth", "rgb"]:
-                    src = dgsg_data_dir / sub
-                    if src.is_dir():
-                        dst = archive_dir / sub
-                        shutil.copytree(str(src), str(dst))
-                        write_log(f"[ARCHIVE] {sub} → {dst}", "info")
-                write_log(f"[ARCHIVE] 数据存档完成: {archive_dir}", "ok")
-            except Exception as e:
-                write_log(f"[ARCHIVE] 存档失败: {e}", "err")
-
-            # ── Apply scale calibration result ──
-            result_path = Path(dgsg_exp_dir) / scene_name / "scale_result.json"
-            if scale_rc == 0 and result_path.exists():
-                meta = json.loads(result_path.read_text())
-                s = meta["scale_factor"]
-                if s != 1.0:
-                    npz_path = Path(dgsg_exp_dir) / scene_name / "params_with_idx.npz"
-                    if npz_path.exists():
-                        write_log(f"[SCALE] Scaling npz by s={s:.6f}...", "info")
-                        data = np.load(str(npz_path))
-                        means3D = data["means3D"].astype(np.float64) * s
-                        np.savez_compressed(str(npz_path),
-                            means3D=means3D.astype(np.float32),
-                            rgb_colors=data["rgb_colors"],
-                            object_idx=data["object_idx"])
-                        write_log(f"[SCALE] npz scaled OK", "ok")
-                update_status(scale_factor=s, scale_confidence=meta["confidence"])
-                write_log(f"[SCALE] s={s:.6f} (method={meta['method']}, conf={meta['confidence']:.2f}, frames={meta.get('num_frames', '?')})", "ok")
-                # Rename result to meta (mark as applied)
-                result_path.rename(Path(dgsg_exp_dir) / scene_name / "scale_meta.json")
-                update_status(scale_status="done")
-                write_log("[SCALE] 米制尺度校准完成", "ok")
-            else:
-                if scale_rc != 0:
-                    scale_err = scale_proc.stderr.read().strip()[:500] if scale_proc.stderr else ""
-                    write_log(f"[SCALE] 校准失败 (rc={scale_rc}): {scale_err}", "err")
-                else:
-                    write_log(f"[SCALE] 校准结果文件不存在，跳过", "err")
-                update_status(scale_status="error")
-
-            # ── 建图成功后自动 convert ──
-            write_log(f"[CONVERT] 开始转换点云数据: scene={scene_name}", "info")
-            try:
-                cv_process = subprocess.Popen(
-                    ["python3", convert_script, scene_name],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, bufsize=1
-                )
-                for line in cv_process.stdout:
-                    line = line.rstrip('\n\r')
-                    if line:
-                        print(f"[CONVERT] {line}", flush=True)
-                        write_log(f"[CONVERT] {line}", "info")
-                cv_process.wait(timeout=300)
-                if cv_process.returncode != 0:
-                    write_log(f"[CONVERT] 转换失败 (rc={cv_process.returncode})", "err")
-                else:
-                    write_log("[CONVERT] 转换完成，前端可切换至空间记忆模式", "ok")
-            except subprocess.TimeoutExpired:
-                cv_process.kill()
-                write_log("[CONVERT] 转换超时（>5分钟）", "err")
-            except Exception as e:
-                write_log(f"[CONVERT] 转换异常: {e}", "err")
         else:
-            update_status(dgsg_status="error", dgsg_error="\n".join(stdout_lines[-10:]))
-            write_log(f"[DGSG] 建图管线失败 (rc={process.returncode})", "err")
+            update_status(dgsg_status="error")
+            write_log(f"[DGSG] 建图管线失败 (rc={dgsg_proc.returncode})", "err")
+            return
+
+        # ── Phase 4: convert to frontend assets (npz already metric) ──
+        write_log(f"[CONVERT] 开始转换点云数据: scene={scene_name}", "info")
+        try:
+            cv_process = subprocess.Popen(
+                ["python3", convert_script, scene_name],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1
+            )
+            for line in cv_process.stdout:
+                line = line.rstrip('\n\r')
+                if line:
+                    print(f"[CONVERT] {line}", flush=True)
+                    write_log(f"[CONVERT] {line}", "info")
+            cv_process.wait(timeout=300)
+            if cv_process.returncode != 0:
+                write_log(f"[CONVERT] 转换失败 (rc={cv_process.returncode})", "err")
+            else:
+                write_log("[CONVERT] 转换完成，前端可切换至空间记忆模式", "ok")
+        except subprocess.TimeoutExpired:
+            cv_process.kill()
+            write_log("[CONVERT] 转换超时（>5分钟）", "err")
+        except Exception as e:
+            write_log(f"[CONVERT] 转换异常: {e}", "err")
+
     except subprocess.TimeoutExpired:
-        process.kill()
-        update_status(dgsg_status="error", dgsg_error="timeout")
+        update_status(dgsg_status="error", dgsg_error="dgsg_timeout")
         write_log("[DGSG] 建图管线超时（>1小时），已终止", "err")
     except Exception as e:
-        update_status(dgsg_status="error", dgsg_error=str(e))
-        write_log(f"[DGSG] 建图管线异常: {e}", "err")
+        update_status(dgsg_status="error", dgsg_error=str(e)[:200])
+        write_log(f"[PIPELINE] 异常: {e}", "err")
 
 @app.post("/batch/{batch_id}/finish_inference")
 async def finish_inference(batch_id: str):
