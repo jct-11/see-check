@@ -23,6 +23,7 @@ import time
 import glob
 import asyncio
 import gzip
+import select
 import subprocess
 import traceback
 import threading
@@ -764,52 +765,88 @@ def _auto_dgsg_pipeline(batch_id: str):
     update_status(dgsg_status="building")
     try:
         write_log(f"[DGSG] 建图管线启动: batch={batch_id} → scene={scene_name}", "info")
-        process = subprocess.Popen(
+        dgsg_proc = subprocess.Popen(
             ["bash", pipeline_script, batch_id, scene_name],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1
         )
-        stdout_lines = []
-        for line in process.stdout:
-            line = line.rstrip('\n\r')
-            stdout_lines.append(line)
-            if line:
-                print(f"[DGSG] {line}", flush=True)
-                write_log(f"[DGSG] {line}", "info")
-        process.wait(timeout=3600)
-        if process.returncode == 0:
+
+        # ── 米制尺度校准（与 DGSG 并行）──
+        update_status(scale_status="calibrating")
+        write_log(f"[SCALE] 米制尺度校准启动（与建图并行）: batch={batch_id}", "info")
+        scale_proc = subprocess.Popen(
+            [conda_python, scale_script, batch_id, scene_name],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1
+        )
+
+        # Read both stdout in parallel using a simple polling loop
+        dgsg_lines = []
+        scale_lines = []
+        dgsg_done = False
+        scale_done = False
+        dgsg_fd = dgsg_proc.stdout.fileno()
+        scale_fd = scale_proc.stdout.fileno()
+
+        while not (dgsg_done and scale_done):
+            fds = []
+            if not dgsg_done:
+                fds.append(dgsg_fd)
+            if not scale_done:
+                fds.append(scale_fd)
+
+            if not fds:
+                break
+
+            readable, _, _ = select.select(fds, [], [], 1.0)
+            for fd in readable:
+                if fd == dgsg_fd:
+                    line = dgsg_proc.stdout.readline()
+                    if line:
+                        line = line.rstrip('\n\r')
+                        dgsg_lines.append(line)
+                        if line:
+                            print(f"[DGSG] {line}", flush=True)
+                            write_log(f"[DGSG] {line}", "info")
+                    else:
+                        dgsg_done = True
+                elif fd == scale_fd:
+                    line = scale_proc.stdout.readline()
+                    if line:
+                        line = line.rstrip('\n\r')
+                        scale_lines.append(line)
+                        if line:
+                            print(f"[SCALE] {line}", flush=True)
+                            write_log(f"[SCALE] {line}", "info")
+                    else:
+                        scale_done = True
+
+            # Check if processes exited
+            if dgsg_proc.poll() is not None:
+                dgsg_done = True
+            if scale_proc.poll() is not None:
+                scale_done = True
+
+        dgsg_rc = dgsg_proc.wait(timeout=3600)
+        scale_rc = scale_proc.wait(timeout=120)
+
+        # ── Handle DGSG result ──
+        if dgsg_rc == 0:
             update_status(dgsg_status="done")
             write_log("[DGSG] 建图管线完成", "ok")
 
-            # ── 米制尺度校准 ──
-            update_status(scale_status="calibrating")
-            write_log(f"[SCALE] 米制尺度校准: batch={batch_id}", "info")
-            try:
-                scale_process = subprocess.run(
-                    [conda_python, scale_script, batch_id, scene_name],
-                    capture_output=True, text=True, timeout=120
-                )
-                for line in scale_process.stdout.strip().split('\n'):
-                    if line.strip():
-                        write_log(f"[SCALE] {line.strip()}", "info")
-                if scale_process.returncode != 0:
-                    write_log(f"[SCALE] 校准失败 (rc={scale_process.returncode}): {scale_process.stderr[:300]}", "err")
-                    update_status(scale_status="error")
-                else:
-                    # Read scale result
-                    meta_path = Path(dgsg_exp_dir) / scene_name / "scale_meta.json"
-                    if meta_path.exists():
-                        meta = json.loads(meta_path.read_text())
-                        update_status(scale_factor=meta["scale_factor"],
-                                      scale_confidence=meta["confidence"])
-                        write_log(f"[SCALE] s={meta['scale_factor']:.6f} (method={meta['method']}, conf={meta['confidence']:.2f})", "ok")
-                    update_status(scale_status="done")
-                    write_log("[SCALE] 米制尺度校准完成", "ok")
-            except subprocess.TimeoutExpired:
-                write_log("[SCALE] 校准超时（>2分钟），继续使用未校准数据", "err")
-                update_status(scale_status="error")
-            except Exception as e:
-                write_log(f"[SCALE] 校准异常: {e}", "err")
+            # ── Handle scale result ──
+            if scale_rc == 0:
+                meta_path = Path(dgsg_exp_dir) / scene_name / "scale_meta.json"
+                if meta_path.exists():
+                    meta = json.loads(meta_path.read_text())
+                    update_status(scale_factor=meta["scale_factor"],
+                                  scale_confidence=meta["confidence"])
+                    write_log(f"[SCALE] s={meta['scale_factor']:.6f} (method={meta['method']}, conf={meta['confidence']:.2f}, frames={meta.get('num_frames', '?')})", "ok")
+                update_status(scale_status="done")
+                write_log("[SCALE] 米制尺度校准完成", "ok")
+            else:
+                write_log(f"[SCALE] 校准失败 (rc={scale_rc})", "err")
                 update_status(scale_status="error")
 
             # ── 建图成功后自动 convert ──

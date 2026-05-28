@@ -16,6 +16,8 @@ import json
 import traceback
 import gc
 import pathlib
+import cv2
+from PIL import Image
 
 # ── Paths ──
 if "HF_ENDPOINT" not in os.environ:
@@ -30,89 +32,28 @@ def log(msg):
     print(f"[scale {ts}] {msg}", flush=True)
 
 
-def find_best_frame(batch_dir):
-    """Find frame with highest mean depth_conf."""
+def find_best_frames(batch_dir, k=5):
+    """Find top-K frames with highest mean depth_conf."""
     conf_dir = batch_dir / "conf"
     conf_files = sorted(conf_dir.glob("frame_*.npy"))
     if not conf_files:
-        log("WARNING: no conf files found, using frame 0")
-        return 0, 0.0
+        log("WARNING: no conf files found, using frame 0 only")
+        return [(0, 0.0)]
 
-    best_idx = 0
-    best_mean = -1.0
+    scored = []
     for cf in conf_files:
         try:
             c = np.load(str(cf))
             m = float(c.mean())
-            if m > best_mean:
-                best_mean = m
-                best_idx = int(cf.stem.split("_")[1])
+            idx = int(cf.stem.split("_")[1])
+            scored.append((idx, m))
         except Exception:
             continue
 
-    log(f"Best frame: {best_idx} (conf_mean={best_mean:.4f})")
-    return best_idx, best_mean
-
-
-def load_model_depths(batch_dir, frame_idx):
-    """Load DAv2 metric depth and lingbot-map predicted depth for a frame."""
-    import cv2
-    from PIL import Image
-
-    # ── Load RGB image ──
-    rgb_path = batch_dir / "frames" / f"frame_{frame_idx:06d}.jpg"
-    if not rgb_path.exists():
-        rgb_path = next(batch_dir.glob("frames/frame_*.jpg"), None)
-        if rgb_path is None:
-            raise FileNotFoundError(f"No frame image found in {batch_dir}/frames/")
-    rgb = cv2.imread(str(rgb_path))
-    if rgb is None:
-        raise ValueError(f"Failed to read {rgb_path}")
-    h, w = rgb.shape[:2]
-    log(f"Using frame: {rgb_path.name} ({w}x{h})")
-
-    # ── DAv2 Small metric depth (raw model output in meters) ──
-    log("Running DAv2 Small metric depth inference...")
-    from transformers import AutoImageProcessor, AutoModelForDepthEstimation
-    import torch
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    t0 = time.time()
-    model = AutoModelForDepthEstimation.from_pretrained(DAV2_MODEL).to(device).eval()
-    processor = AutoImageProcessor.from_pretrained(DAV2_MODEL)
-    rgb_pil = Image.fromarray(cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB))
-    inputs = processor(images=rgb_pil, return_tensors="pt").to(device)
-    with torch.no_grad():
-        outputs = model(**inputs)
-        depth_raw = outputs.predicted_depth  # raw meters, not 0-255
-    # Resize to original image size
-    depth_raw = torch.nn.functional.interpolate(
-        depth_raw.unsqueeze(1), size=rgb_pil.size[::-1],
-        mode="bilinear", align_corners=False
-    ).squeeze().cpu().numpy().astype(np.float32)
-    depth_metric = depth_raw  # meters
-    model_ms = (time.time() - t0) * 1000
-    log(f"DAv2 inference: {model_ms:.0f}ms (device={device.type})")
-
-    # ── Clean up ──
-    del model, processor
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    log("DAv2 model unloaded")
-
-    # ── Load lingbot-map predicted depth ──
-    depth_path = batch_dir / "depth" / f"frame_{frame_idx:06d}.png"
-    if not depth_path.exists():
-        depth_list = sorted(batch_dir.glob("depth/frame_*.png"))
-        if depth_list:
-            depth_path = depth_list[0]
-        else:
-            raise FileNotFoundError(f"No depth image found for frame {frame_idx}")
-    depth_pred = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
-    log(f"Loaded depth: {depth_pred.shape[1]}x{depth_pred.shape[0]}")
-
-    return depth_metric, depth_pred, rgb
+    scored.sort(key=lambda x: -x[1])
+    top = scored[:k]
+    log(f"Top-{k} frames by conf: {[(idx, f'{conf:.3f}') for idx, conf in top]}")
+    return top
 
 
 def compute_scale(depth_metric, depth_pred, rgb=None):
@@ -182,11 +123,16 @@ def main():
 
     if len(sys.argv) < 3:
         log("ERROR: missing arguments")
-        log("Usage: python scale_calibrate.py <batch_id> <scene_name>")
+        log("Usage: python scale_calibrate.py <batch_id> <scene_name> [--k N]")
         sys.exit(1)
 
     batch_id = sys.argv[1]
     scene_name = sys.argv[2]
+    k = 5
+    for i, arg in enumerate(sys.argv):
+        if arg == "--k" and i + 1 < len(sys.argv):
+            k = int(sys.argv[i + 1])
+
     batch_dir = pathlib.Path(DATA_DIR) / batch_id
     npz_path = pathlib.Path(DGSG_EXP_DIR) / scene_name / "params_with_idx.npz"
 
@@ -194,34 +140,99 @@ def main():
         log(f"ERROR: npz not found: {npz_path}")
         sys.exit(1)
 
-    log(f"batch_id={batch_id} scene={scene_name}")
+    log(f"batch_id={batch_id} scene={scene_name} k={k}")
     log(f"npz_path={npz_path}")
 
-    # ── 1. Find best frame by confidence ──
-    best_frame, best_conf = find_best_frame(batch_dir)
+    # ── 1. Find top-K frames by confidence ──
+    top_frames = find_best_frames(batch_dir, k)
 
-    # ── 2. Compute scale factor s ──
-    try:
-        depth_metric, depth_pred, rgb = load_model_depths(batch_dir, best_frame)
-    except FileNotFoundError as e:
-        log(f"ERROR: missing data for scale calibration: {e}")
-        log("Pipeline continues with s=1.0 (unscaled)")
-        return
+    # ── 2. Load DAv2 model once, run on all K frames ──
+    from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+    import torch
+    import cv2
+    from PIL import Image
 
-    s, method, conf = compute_scale(depth_metric, depth_pred)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    log(f"Loading DAv2 model (device={device.type})...")
+    model = AutoModelForDepthEstimation.from_pretrained(DAV2_MODEL).to(device).eval()
+    processor = AutoImageProcessor.from_pretrained(DAV2_MODEL)
 
-    if s < 0.01 or s > 100 or not np.isfinite(s):
-        log(f"WARNING: unreasonable s={s}, clamping to 1.0")
+    s_values = []
+    frame_results = []
+
+    for frame_idx, conf_mean in top_frames:
+        log(f"Frame {frame_idx} (conf={conf_mean:.3f})...")
+
+        # Load RGB and model depth
+        rgb_path = batch_dir / "frames" / f"frame_{frame_idx:06d}.jpg"
+        if not rgb_path.exists():
+            log(f"  SKIP: no RGB for frame {frame_idx}")
+            continue
+        bgr = cv2.imread(str(rgb_path))
+        if bgr is None:
+            log(f"  SKIP: failed to read {rgb_path}")
+            continue
+        rgb_pil = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+
+        depth_path = batch_dir / "depth" / f"frame_{frame_idx:06d}.png"
+        if not depth_path.exists():
+            log(f"  SKIP: no depth for frame {frame_idx}")
+            continue
+        depth_pred = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
+
+        # DAv2 inference
+        t_inf = time.time()
+        inputs = processor(images=rgb_pil, return_tensors="pt").to(device)
+        with torch.no_grad():
+            outputs = model(**inputs)
+            d_raw = outputs.predicted_depth
+        d_raw = torch.nn.functional.interpolate(
+            d_raw.unsqueeze(1), size=rgb_pil.size[::-1],
+            mode="bilinear", align_corners=False
+        ).squeeze().cpu().numpy().astype(np.float32)
+        log(f"  DAv2: {((time.time()-t_inf)*1000):.0f}ms")
+
+        s_i, method_i, conf_i = compute_scale(d_raw, depth_pred)
+        if 0.01 < s_i < 100 and np.isfinite(s_i):
+            s_values.append(s_i)
+            frame_results.append({
+                "frame": int(frame_idx), "conf_mean": float(conf_mean),
+                "s": float(s_i), "method": method_i, "s_confidence": float(conf_i),
+            })
+        else:
+            log(f"  SKIP: unreasonable s={s_i}")
+
+    # ── Clean up DAv2 ──
+    del model, processor
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    log("DAv2 model unloaded")
+
+    if len(s_values) == 0:
+        log("ERROR: no valid s from any frame, using s=1.0")
         s = 1.0
+        method = "fallback_none"
+        conf = 0.0
+    elif len(s_values) == 1:
+        s = s_values[0]
+        method = "single_frame"
+        conf = frame_results[0]["s_confidence"]
+    else:
+        s = float(np.median(s_values))
+        method = f"median_of_{len(s_values)}"
+        conf = float(1.0 - np.std(s_values) / (np.mean(s_values) + 1e-8))
+        conf = max(0.0, min(1.0, conf))
+
+    log(f"Final s = {s:.6f} (method={method}, conf={conf:.2f}, from {len(s_values)} frames: {[f'{v:.3f}' for v in s_values]})")
 
     # ── 3. Scale means3D and save ──
-    log(f"Loading npz for scaling...")
+    log("Loading npz for scaling...")
     data = np.load(npz_path)
     means3D = data["means3D"].astype(np.float64)
     means3D *= s
     means3D = means3D.astype(np.float32)
 
-    # Overwrite original npz
     log(f"Scaling means3D by s={s:.6f}, saving...")
     np.savez_compressed(
         npz_path,
@@ -235,8 +246,8 @@ def main():
         "scale_factor": float(s),
         "method": method,
         "confidence": float(conf),
-        "best_frame": int(best_frame),
-        "best_frame_conf_mean": float(best_conf),
+        "num_frames": len(s_values),
+        "frames": frame_results,
         "elapsed_sec": round(time.time() - t0, 2),
     }
     meta_path = npz_path.parent / "scale_meta.json"
