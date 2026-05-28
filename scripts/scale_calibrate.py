@@ -22,7 +22,7 @@ from PIL import Image
 # ── Paths ──
 if "HF_ENDPOINT" not in os.environ:
     os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-DAV2_MODEL = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
+DAV2_MODEL = "depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf"
 DATA_DIR = "/home/sscy/lingbot-map/stmem-main/data"
 DGSG_EXP_DIR = "/home/liangjiahua/dgsg-orin/experiments/mydata"
 
@@ -184,50 +184,81 @@ def main():
     model = AutoModelForDepthEstimation.from_pretrained(DAV2_MODEL).to(device).eval()
     processor = AutoImageProcessor.from_pretrained(DAV2_MODEL)
 
-    s_values = []
-    frame_results = []
-
-    for frame_idx, conf_mean in top_frames:
-        log(f"Frame {frame_idx} (conf={conf_mean:.3f})...")
-
-        # Load RGB and model depth
+    # Helper: run DAv2 on one frame, return metric depth
+    def dav2_infer(frame_idx):
         rgb_path = batch_dir / "frames" / f"frame_{frame_idx:06d}.jpg"
         if not rgb_path.exists():
-            log(f"  SKIP: no RGB for frame {frame_idx}")
-            continue
+            return None
         bgr = cv2.imread(str(rgb_path))
         if bgr is None:
-            log(f"  SKIP: failed to read {rgb_path}")
-            continue
+            return None
         rgb_pil = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
-
-        depth_path = batch_dir / "depth" / f"frame_{frame_idx:06d}.png"
-        if not depth_path.exists():
-            log(f"  SKIP: no depth for frame {frame_idx}")
-            continue
-        depth_pred = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
-
-        # DAv2 inference
         t_inf = time.time()
         inputs = processor(images=rgb_pil, return_tensors="pt").to(device)
         with torch.no_grad():
-            outputs = model(**inputs)
-            d_raw = outputs.predicted_depth
+            d_raw = model(**inputs).predicted_depth
         d_raw = torch.nn.functional.interpolate(
             d_raw.unsqueeze(1), size=rgb_pil.size[::-1],
             mode="bilinear", align_corners=False
         ).squeeze().cpu().numpy().astype(np.float32)
-        log(f"  DAv2: {((time.time()-t_inf)*1000):.0f}ms")
+        log(f"    DAv2 frame {frame_idx}: {((time.time()-t_inf)*1000):.0f}ms")
+        return d_raw
 
-        s_i, method_i, conf_i = compute_scale(d_raw, depth_pred)
+    # Helper: compute s for a frame (with caching)
+    _s_cache = {}
+    def get_s(frame_idx):
+        if frame_idx in _s_cache:
+            return _s_cache[frame_idx]
+        d_metric = dav2_infer(frame_idx)
+        if d_metric is None:
+            return None
+        depth_path = batch_dir / "depth" / f"frame_{frame_idx:06d}.png"
+        if not depth_path.exists():
+            return None
+        d_pred = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
+        s_i, _, _ = compute_scale(d_metric, d_pred)
         if 0.01 < s_i < 100 and np.isfinite(s_i):
-            s_values.append(s_i)
-            frame_results.append({
-                "frame": int(frame_idx), "conf_mean": float(conf_mean),
-                "s": float(s_i), "method": method_i, "s_confidence": float(conf_i),
-            })
-        else:
-            log(f"  SKIP: unreasonable s={s_i}")
+            _s_cache[frame_idx] = s_i
+            return s_i
+        return None
+
+    TOLERANCE = 0.3
+    s_values = []
+    frame_results = []
+    discarded = 0
+
+    for frame_idx, conf_mean in top_frames:
+        log(f"Frame {frame_idx} (conf={conf_mean:.3f})...")
+
+        s_f = get_s(frame_idx)
+        if s_f is None:
+            log(f"  SKIP: cannot compute s for frame {frame_idx}")
+            discarded += 1
+            continue
+
+        s_prev = get_s(frame_idx - 1)
+        s_next = get_s(frame_idx + 1)
+
+        if s_prev is None or s_next is None:
+            log(f"  SKIP: missing neighbor ({'prev' if s_prev is None else 'next'})")
+            discarded += 1
+            continue
+
+        dp = abs(s_f - s_prev) / s_f
+        dn = abs(s_f - s_next) / s_f
+        if dp > TOLERANCE or dn > TOLERANCE:
+            log(f"  DISCARD: s_f={s_f:.3f} s_prev={s_prev:.3f} s_next={s_next:.3f} (dp={dp:.2f} dn={dn:.2f})")
+            discarded += 1
+            continue
+
+        log(f"  ACCEPT: s={s_f:.3f} (prev={s_prev:.3f} next={s_next:.3f})")
+        s_values.append(s_f)
+        frame_results.append({
+            "frame": int(frame_idx), "conf_mean": float(conf_mean),
+            "s": float(s_f), "neighbors_ok": True,
+        })
+
+    log(f"Temporal filter: {len(s_values)} accepted, {discarded} discarded (cache={len(_s_cache)} inferences)")
 
     # ── Clean up DAv2 ──
     del model, processor
