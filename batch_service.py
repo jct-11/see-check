@@ -835,6 +835,21 @@ def _auto_dgsg_pipeline(batch_id: str):
             update_status(dgsg_status="done")
             write_log("[DGSG] 建图管线完成", "ok")
 
+            # ── Archive poses/depth/rgb to datasave ──
+            try:
+                dgsg_data_dir = Path("/home/liangjiahua/dgsg-orin/data/mydata") / scene_name
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                archive_dir = Path("/home/sscy/lingbot-map/stmem-main/datasave") / ts
+                for sub in ["poses", "depth", "rgb"]:
+                    src = dgsg_data_dir / sub
+                    if src.is_dir():
+                        dst = archive_dir / sub
+                        shutil.copytree(str(src), str(dst))
+                        write_log(f"[ARCHIVE] {sub} → {dst}", "info")
+                write_log(f"[ARCHIVE] 数据存档完成: {archive_dir}", "ok")
+            except Exception as e:
+                write_log(f"[ARCHIVE] 存档失败: {e}", "err")
+
             # ── Apply scale calibration result ──
             result_path = Path(dgsg_exp_dir) / scene_name / "scale_result.json"
             if scale_rc == 0 and result_path.exists():
