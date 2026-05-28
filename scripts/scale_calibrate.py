@@ -151,6 +151,18 @@ def main():
             k = int(sys.argv[i + 1])
 
     batch_dir = pathlib.Path(DATA_DIR) / batch_id
+
+    # Fallback: if batch data missing (overwritten by next session), use latest symlink
+    if not batch_dir.exists() or not (batch_dir / "conf").exists():
+        latest_link = pathlib.Path(DATA_DIR) / "latest"
+        if latest_link.is_symlink():
+            fallback_dir = latest_link.resolve()
+            log(f"batch {batch_id} data missing, fallback to latest: {fallback_dir.name}")
+            batch_dir = fallback_dir
+        else:
+            log(f"ERROR: batch {batch_id} not found and no latest symlink")
+            sys.exit(1)
+
     npz_path = pathlib.Path(DGSG_EXP_DIR) / scene_name / "params_with_idx.npz"
 
     if not npz_path.exists():
@@ -159,7 +171,7 @@ def main():
 
     k_str = "auto" if k is None else str(k)
     log(f"batch_id={batch_id} scene={scene_name} k={k_str}")
-    log(f"npz_path={npz_path}")
+    log(f"batch_dir={batch_dir}")
 
     # ── 1. Find top-K frames by confidence ──
     top_frames = find_best_frames(batch_dir, k)

@@ -776,7 +776,7 @@ def _auto_dgsg_pipeline(batch_id: str):
         write_log(f"[SCALE] 米制尺度校准启动（与建图并行）: batch={batch_id}", "info")
         scale_proc = subprocess.Popen(
             [conda_python, scale_script, batch_id, scene_name],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1
         )
 
@@ -846,7 +846,8 @@ def _auto_dgsg_pipeline(batch_id: str):
                 update_status(scale_status="done")
                 write_log("[SCALE] 米制尺度校准完成", "ok")
             else:
-                write_log(f"[SCALE] 校准失败 (rc={scale_rc})", "err")
+                scale_err = scale_proc.stderr.read().strip()[:500] if scale_proc.stderr else ""
+                write_log(f"[SCALE] 校准失败 (rc={scale_rc}): {scale_err}", "err")
                 update_status(scale_status="error")
 
             # ── 建图成功后自动 convert ──
