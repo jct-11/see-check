@@ -753,7 +753,9 @@ async def upload_frames(batch_id: str, files: list[UploadFile] = File(...)):
 
         with open(frame_path, 'wb') as f:
             f.write(frame_data)
-        
+
+        write_log(f"[TS] 帧到达 #{frame_index} {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
+
         saved_count += 1
     
     total_frames = existing_frames + saved_count

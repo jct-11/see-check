@@ -643,6 +643,11 @@ async function uploadFramesToBatchServer(batchId, frames) {
     formData.append('files', blob, `frame_${String(frameNum).padStart(6, '0')}.jpg`);
   });
   
+  frames.forEach(function(__blob, index) {
+    var fn = spatialFrameCounter - frames.length + index;
+    addLog('[TS] 上传开始 #' + fn + ' ' + new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 }), 'info');
+  });
+
   try {
     const response = await fetch(`${BATCH_SERVER_URL}/batch/${batchId}/frames`, {
       method: 'POST',
