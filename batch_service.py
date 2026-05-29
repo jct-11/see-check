@@ -645,8 +645,14 @@ async def root():
 async def start_inference(batch_id: str, body: dict):
     """开始流式推理"""
     batch_dir = DATA_DIR / batch_id
-    frames_dir = batch_dir / "frames"
 
+    # 清除旧批次数据，新数据覆盖旧数据
+    if DATA_DIR.exists():
+        for old_dir in DATA_DIR.iterdir():
+            if old_dir.is_dir() and old_dir.name != batch_id:
+                shutil.rmtree(str(old_dir), ignore_errors=True)
+
+    frames_dir = batch_dir / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
 
     
