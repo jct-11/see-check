@@ -214,7 +214,7 @@ function setSpatialApiCallbacks(callbacks) {
  * @param {string} msg - 日志消息内容
  * @param {string} [type='info'] - 日志类型：'info'|'ok'|'err'
  */
-function addLog(msg, type) {
+function addLog(msg, type, noSync) {
   const logMsg = msg;
   const logType = type || 'info';
 
@@ -224,6 +224,16 @@ function addLog(msg, type) {
     console.log('%c[Spatial] ' + logMsg, 'color: #4caf50; font-weight: bold');
   } else {
     console.log('[Spatial] ' + logMsg);
+  }
+
+  // [TS] 时间戳日志同步推送到后端，统一显示在日志面板
+  // noSync=true 时跳过（防止后端日志回环）
+  if (!noSync && msg.indexOf('[TS]') === 0 && typeof fetchBatchId !== 'undefined' && fetchBatchId) {
+    fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: msg, type: logType })
+    }).catch(function(){});
   }
 }
 
@@ -1671,6 +1681,7 @@ function animate() {
 
 function addFramePointCloudToScene(frameIndex) {
   if (!THREE || !scene) return;
+  addLog('[TS] 渲染开始 #' + frameIndex + ' ' + new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 }), 'info');
 
   const frameData = framePointClouds[frameIndex];
   if (!frameData) return;
@@ -1740,6 +1751,7 @@ function addFramePointCloudToScene(frameIndex) {
   framePointsObjects.push({ points: pointsObj, frameIndex: frameIndex });
   const tGeomCreate1 = performance.now();
   console.log('[点云] #' + frameIndex + ' 过滤 ' + count + '/' + numPoints + ' 点 ' + (tFilterEnd - window.__tFilterStart).toFixed(1) + 'ms + 几何' + (tGeomCreate1 - tGeomCreate0).toFixed(1) + 'ms');
+  addLog('[TS] 渲染成功 #' + frameIndex + ' ' + new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 }), 'info');
 
   accumCount += count;
   visualizerStats.vertices = accumCount;
@@ -2308,6 +2320,7 @@ async function fetchNextFrame() {
   // ✅ 流式模式：有新帧或批量模式：继续拉取当前帧
   try {
     const tNet0 = performance.now();
+    addLog('[TS] 拉取 #' + currentFetchFrame + ' ' + new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 }), 'info');
     let pointCloudResponse, cameraResponse;
     // 先从预取队列取，再从单个预取取，最后才实时 fetch
     var queued = null;
@@ -2531,6 +2544,25 @@ function startStreamingFetchLoop() {
   
   // 启动状态监控
   setTimeout(monitorStatus, 1000);
+
+  // 启动日志轮询，将后端 write_log 同步到前端日志面板
+  var _lastLogCount = 0;
+  const pollLogs = async () => {
+    if (!isFetchingFrames || !fetchBatchId) return;
+    try {
+      const resp = await fetch(`${BATCH_SERVER_URL}/batch/${fetchBatchId}/logs`);
+      if (resp.ok) {
+        const data = await resp.json();
+        const logs = data.logs || [];
+        if (logs.length > _lastLogCount) {
+          logs.slice(_lastLogCount).forEach(function(l) { addLog(l.message, l.type, true); });
+          _lastLogCount = logs.length;
+        }
+      }
+    } catch (e) { /* ignore */ }
+    if (isFetchingFrames) setTimeout(pollLogs, 1000);
+  };
+  setTimeout(pollLogs, 500);
 }
 
 /**

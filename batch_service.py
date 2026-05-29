@@ -391,6 +391,7 @@ def on_frame_callback(frame_idx, image_np, frame_output):
             np.save(str(point_dir / f"frame_{frame_idx:06d}.npy"), wp_filtered.astype(np.float32))
 
         add_to_frame_cache(frame_idx, pred_pts, color_flat, conf_flat, camera)
+        write_log(f"[TS] 缓存就绪 #{frame_idx} {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
 
         processed = len(frame_cache)
         update_status(processed_frames=processed)
@@ -432,6 +433,8 @@ def process_scale_frames(frames_dir, num_scale_frames=NUM_SCALE_FRAMES):
     model_state["model"].clean_kv_cache()
     
     # Phase 1: Scale frames推理
+    t_scale_start = time.time()
+    write_log(f"[TS] 推理开始 #scale(0-{num_scale_frames-1}) {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
     with torch.no_grad(), torch.amp.autocast("cuda", dtype=DTYPE):
         scale_output = model_state["model"].forward(
             scale_tensor,
@@ -439,6 +442,8 @@ def process_scale_frames(frames_dir, num_scale_frames=NUM_SCALE_FRAMES):
             num_frame_per_block=num_scale_frames,
             causal_inference=True,
         )
+    t_scale_done = time.time()
+    write_log(f"[TS] 推理成功 #scale(0-{num_scale_frames-1}) {datetime.now().strftime('%H:%M:%S.%f')[:-3]} ({((t_scale_done-t_scale_start)*1000):.0f}ms)")
     
     # 处理每一帧的输出
     for i in range(num_scale_frames):
@@ -567,6 +572,8 @@ def frame_monitor_thread():
                         model_state["model"]._set_skip_append(True)
                     
                     # 推理
+                    t_infer_start = time.time()
+                    write_log(f"[TS] 推理开始 #{frame_idx} {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
                     with torch.no_grad(), torch.amp.autocast("cuda", dtype=DTYPE):
                         frame_output = model_state["model"].forward(
                             frame_image,
@@ -574,6 +581,8 @@ def frame_monitor_thread():
                             num_frame_per_block=1,
                             causal_inference=True,
                         )
+                    t_infer_done = time.time()
+                    write_log(f"[TS] 推理成功 #{frame_idx} {datetime.now().strftime('%H:%M:%S.%f')[:-3]} ({((t_infer_done-t_infer_start)*1000):.0f}ms)")
                     
                     if not is_keyframe:
                         model_state["model"]._set_skip_append(False)
@@ -780,7 +789,7 @@ def _auto_dgsg_pipeline(batch_id: str):
         )
         for line in scale_proc.stdout.strip().split('\n'):
             if line.strip():
-                print(f"[SCALE] {line.strip()}", flush=True)
+                print(f"[SCALE] {line.strip()}")
                 write_log(f"[SCALE] {line.strip()}", "info")
         if scale_proc.stderr:
             for line in scale_proc.stderr.strip().split('\n'):
@@ -814,7 +823,7 @@ def _auto_dgsg_pipeline(batch_id: str):
             )
             for line in sd_proc.stdout.strip().split('\n'):
                 if line.strip():
-                    print(f"[SCALE_DATA] {line.strip()}", flush=True)
+                    print(f"[SCALE_DATA] {line.strip()}")
                     write_log(f"[SCALE_DATA] {line.strip()}", "info")
             if sd_proc.returncode != 0:
                 write_log(f"[SCALE_DATA] 数据缩放失败 (rc={sd_proc.returncode}): {sd_proc.stderr[:300]}", "err")
@@ -832,7 +841,7 @@ def _auto_dgsg_pipeline(batch_id: str):
         for line in dgsg_proc.stdout:
             line = line.rstrip('\n\r')
             if line:
-                print(f"[DGSG] {line}", flush=True)
+                print(f"[DGSG] {line}")
                 write_log(f"[DGSG] {line}", "info")
         dgsg_proc.wait(timeout=3600)
 
@@ -855,7 +864,7 @@ def _auto_dgsg_pipeline(batch_id: str):
             for line in cv_process.stdout:
                 line = line.rstrip('\n\r')
                 if line:
-                    print(f"[CONVERT] {line}", flush=True)
+                    print(f"[CONVERT] {line}")
                     write_log(f"[CONVERT] {line}", "info")
             cv_process.wait(timeout=300)
             if cv_process.returncode != 0:
@@ -972,6 +981,14 @@ async def get_status(batch_id: str):
 async def get_logs(batch_id: str):
     """获取日志"""
     return {"logs": batch_logs}
+
+@app.post("/batch/{batch_id}/log")
+async def post_log(batch_id: str, body: dict):
+    """前端推送日志到批次日志"""
+    msg = body.get("message", "")
+    log_type = body.get("type", "info")
+    write_log(msg, log_type)
+    return {"success": True}
 
 @app.get("/batch/{batch_id}/metadata")
 async def get_metadata(batch_id: str):
