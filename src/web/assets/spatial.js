@@ -226,15 +226,6 @@ function addLog(msg, type, noSync) {
     console.log('[Spatial] ' + logMsg);
   }
 
-  // [TS] 时间戳日志同步推送到后端，统一显示在日志面板
-  // noSync=true 时跳过（防止后端日志回环）
-  if (!noSync && msg.indexOf('[TS]') === 0 && typeof fetchBatchId !== 'undefined' && fetchBatchId) {
-    fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/log', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: msg, type: logType })
-    }).catch(function(){});
-  }
 }
 
 /**
@@ -2338,7 +2329,7 @@ async function fetchNextFrame() {
     
     console.log('[fetch] 等待新帧... processed=' + currentProcessedFrames + ', current=' + currentFetchFrame);
     if (isFetchingFrames) {
-      scheduleNextFetch(200);
+      scheduleNextFetch(100);
     }
     return;
   }
@@ -2596,7 +2587,7 @@ function startStreamingFetchLoop() {
           // 检测到缓存就绪立即触发拉取，不等 status 轮询
           for (var i = 0; i < newLogs.length; i++) {
             if (newLogs[i].message.indexOf('[TS] 缓存就绪') !== -1) {
-              if (isFetchingFrames && _concurrentFetches < MAX_CONCURRENT) {
+              if (isFetchingFrames) {
                 scheduleNextFetch(0);
               }
               break;
