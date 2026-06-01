@@ -108,17 +108,25 @@ DOWNSAMPLE_FACTOR = 10     # 下采样倍数
 MAX_CACHE_FRAMES = 600     # 内存缓存最大帧数
 
 # 点云帧缓存
-frame_cache = {}  # {frame_index: {"points": [...], "colors": [...], "confs": [...], "camera": {...}}}
+frame_cache = {}  # {frame_index: {"compressed": bytes, "n_points": int, "camera": {...}}}
 cache_frame_order = []  # 维护缓存顺序，用于 FIFO 淘汰
 
 def add_to_frame_cache(frame_idx, points, colors, confs, camera):
     """添加点云到缓存，超过 MAX_CACHE_FRAMES 时丢弃最旧帧"""
     global frame_cache, cache_frame_order
-    
+
+    # 预序列化+压缩，避免每次请求重复 tobytes()+gzip
+    points_arr = np.asarray(points, dtype=np.float32)
+    colors_arr = np.asarray(colors, dtype=np.float32)
+    confs_arr = np.asarray(confs, dtype=np.float32)
+    n = np.uint32(len(points_arr))
+    buf = n.tobytes() + points_arr.tobytes() + colors_arr.tobytes() + confs_arr.tobytes()
+    compressed = gzip.compress(buf, compresslevel=1)
+
     frame_cache[frame_idx] = {
-        "points": np.asarray(points, dtype=np.float32),
-        "colors": np.asarray(colors, dtype=np.float32),
-        "confs": np.asarray(confs, dtype=np.float32),
+        "compressed": compressed,
+        "n_points": int(n),
+        "positions": points_arr,  # 保留给 metadata 等用
         "camera": camera,
         "inference_time": time.time(),
     }
@@ -904,7 +912,7 @@ async def finish_inference(batch_id: str):
     model_state["finish_requested"] = False
     
     total_processed = len(frame_cache)
-    total_points = sum(len(f["points"]) for f in frame_cache.values())
+    total_points = sum(f["n_points"] for f in frame_cache.values())
     
     update_status(
         status="completed",
@@ -1013,7 +1021,7 @@ async def get_metadata(batch_id: str):
     # 计算场景中心和尺度（从缓存的点云计算）
     all_points = []
     for frame_idx in frame_cache:
-        points = np.asarray(frame_cache[frame_idx]["points"])
+        points = frame_cache[frame_idx]["positions"]
         all_points.append(points)
     
     if all_points:
@@ -1044,21 +1052,12 @@ async def get_frame_point_cloud(batch_id: str, frame_index: int):
         raise HTTPException(status_code=404, detail=f"帧 {frame_index} 尚未处理完成")
     
     cached = frame_cache[frame_index]
-    
-    # 返回原始数据（与 live_camera.py 一致，不过滤）
-    points_arr = np.asarray(cached["points"], dtype=np.float32)
-    colors_arr = np.asarray(cached["colors"], dtype=np.float32)
-    confs_arr = np.asarray(cached["confs"], dtype=np.float32)
-    
-    if len(points_arr) == 0:
+
+    if cached.get("n_points", 0) == 0:
         raise HTTPException(status_code=404, detail=f"帧 {frame_index} 无有效点云数据")
-    
-    # 二进制编码传输，gzip 压缩（减少网络传输时间）
-    n = np.uint32(len(points_arr))
-    buf = n.tobytes() + points_arr.tobytes() + colors_arr.tobytes() + confs_arr.tobytes()
-    compressed = gzip.compress(buf, compresslevel=1)
+
     return Response(
-        content=compressed,
+        content=cached["compressed"],
         media_type="application/octet-stream",
         headers={
             "X-Inference-Time": str(cached["inference_time"]),

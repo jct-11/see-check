@@ -2231,6 +2231,7 @@ var _concurrentFetches = 0;
 var MAX_CONCURRENT = 4;
 var _statusCheckLock = false;
 var _nextRenderFrame = -1;  // next frame to render in order (set on first claimed frame)
+var _consecutive404s = 0;
 
 function scheduleNextFetch(delay) {
   fetchNextFramePending++;
@@ -2260,6 +2261,16 @@ async function fetchNextFrame() {
     return;
   }
   const tFetch0 = performance.now();
+
+  // 连续 404 ≥ 5 → 已无更多帧，停止拉取
+  if (_consecutive404s >= 5) {
+    isFetchingFrames = false;
+    var totalFrames = framePointsObjects.length;
+    addLog(`全部渲染完成, 共 ${totalFrames} 帧`, 'ok');
+    disableCameraFollow();
+    streamingComplete = true;
+    return;
+  }
 
   if (!isFetchingFrames) {
     isFetchingFrames = false;
@@ -2386,7 +2397,8 @@ async function fetchNextFrame() {
     // 验证响应
     if (!buf && (!pointCloudResponse || !pointCloudResponse.ok)) {
       if (pointCloudResponse && pointCloudResponse.status === 404) {
-        console.log('[拉取] #' + myFrameIdx + ' 404 跳过');
+        _consecutive404s++;
+        console.log('[拉取] #' + myFrameIdx + ' 404 跳过 (连续' + _consecutive404s + ')');
         _concurrentFetches--;
         if (isFetchingFrames) scheduleNextFetch(0);
         return;
@@ -2427,6 +2439,7 @@ async function fetchNextFrame() {
     if (n <= 0 || n * 28 + 4 !== buf.byteLength || n > 5000000) {
       throw new Error('Invalid point cloud binary: n=' + n + ', byteLength=' + buf.byteLength);
     }
+    _consecutive404s = 0;
     const numVertices = n;
 
     const flatPositions = new Float32Array(buf, 4, n * 3);
@@ -2584,10 +2597,45 @@ function startStreamingFetchLoop() {
           var newLogs = logs.slice(_lastLogCount);
           newLogs.forEach(function(l) { addLog(l.message, l.type, true); });
           _lastLogCount = logs.length;
-          // 检测到缓存就绪立即触发拉取，不等 status 轮询
+          // 检测到缓存就绪立即预取该帧，不等 status 轮询
           for (var i = 0; i < newLogs.length; i++) {
             if (newLogs[i].message.indexOf('[TS] 缓存就绪') !== -1) {
               if (isFetchingFrames) {
+                // 提取帧号
+                var m = newLogs[i].message.match(/#(\d+)/);
+                if (m) {
+                  var cachedIdx = parseInt(m[1]);
+                  // 避免重复预取
+                  var alreadyQueued = false;
+                  for (var qi = 0; qi < prefetchQueue.length; qi++) {
+                    if (prefetchQueue[qi] && prefetchQueue[qi].frameIndex === cachedIdx) {
+                      alreadyQueued = true; break;
+                    }
+                  }
+                  if (!alreadyQueued && cachedIdx >= currentFetchFrame) {
+                    var entry = { frameIndex: cachedIdx };
+                    entry._headersPromise = Promise.all([
+                      fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + cachedIdx + '/point_cloud').then(function(r) { entry._pcResp = r; return r; }),
+                      fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + cachedIdx + '/camera').then(function(r) { entry._camResp = r; return r; })
+                    ]).then(function(results) {
+                      entry._fetching = false;
+                      entry._bodyPromise = Promise.all([
+                        results[0].arrayBuffer(),
+                        results[1].json()
+                      ]).then(function(data) {
+                        entry._pcBuf = data[0];
+                        entry._camResult = data[1];
+                      });
+                      return results;
+                    }).catch(function(err) {
+                      console.warn('[预取] #' + cachedIdx + ' 失败:', err.message);
+                      entry._fetching = false;
+                      entry._error = true;
+                    });
+                    entry._fetching = true;
+                    prefetchQueue.push(entry);
+                  }
+                }
                 scheduleNextFetch(0);
               }
               break;
