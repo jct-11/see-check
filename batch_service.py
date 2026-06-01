@@ -490,18 +490,18 @@ def frame_monitor_thread():
         try:
             if not model_state["is_streaming"]:
                 scale_processed = False
-                time.sleep(0.5)
+                time.sleep(0.1)
                 continue
             
             batch_id = model_state["current_batch_id"]
             if not batch_id:
-                time.sleep(0.5)
+                time.sleep(0.1)
                 continue
             
             frames_dir = DATA_DIR / batch_id / "frames"
             if not frames_dir.exists():
                 write_log(f"帧文件夹不存在: {frames_dir}", "info")
-                time.sleep(0.5)
+                time.sleep(0.1)
                 continue
             
             # Phase 1: 处理scale frames（只执行一次）
@@ -521,11 +521,11 @@ def frame_monitor_thread():
                         write_log("初始化完成, 开始逐帧推理", "ok")
                     else:
                         write_log("初始化失败, 重试...", "err")
-                        time.sleep(0.5)
+                        time.sleep(0.1)
                         continue
                 else:
                     write_log(f"帧数不足: {len(all_paths)}/{NUM_SCALE_FRAMES}", "info")
-                    time.sleep(0.5)
+                    time.sleep(0.1)
                     continue
             
             # Phase 2/3: 处理后续帧
@@ -624,8 +624,8 @@ def frame_monitor_thread():
                     write_log(f"推理结束, 共 {model_state['frame_idx']} 帧", "ok")
                     model_state["is_streaming"] = False
             
-            time.sleep(0.5)
-            
+            time.sleep(0.1)
+
         except Exception as e:
             write_log(f"监控线程异常: {e}", "err")
             traceback.print_exc()
