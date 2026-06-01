@@ -1,7 +1,7 @@
 """LingBot-MAP 流式批次管理服务（单用户架构）
 
 参考 live_camera.py 和 stream.py 的设计：
-- 模型常驻内存，不重复加载
+- 模型按需加载，推理完成自动卸载释放显存
 - 维护KV缓存，逐帧推理
 - 后台线程监控帧文件夹，自动处理新帧
 - 点云数据缓存在内存中，API直接返回
@@ -641,18 +641,14 @@ def frame_monitor_thread():
 
 @app.on_event("startup")
 async def startup_event():
-    """服务启动时加载模型"""
+    """服务启动"""
     write_log("服务启动中...", "info")
-    
-    if not model_state["initialized"]:
-        model_state["model"], model_state["device"] = load_model()
-        model_state["initialized"] = True
-        
-        # 启动监控线程
-        monitor = threading.Thread(target=frame_monitor_thread, daemon=True)
-        monitor.start()
-        
-        write_log("服务启动完成", "ok")
+
+    # 启动监控线程（模型按需加载，推理完成自动卸载）
+    monitor = threading.Thread(target=frame_monitor_thread, daemon=True)
+    monitor.start()
+
+    write_log("服务启动完成", "ok")
 
 @app.get("/")
 async def root():
@@ -922,7 +918,12 @@ async def finish_inference(batch_id: str):
     
     write_log(f"推理完成，共 {total_processed} 帧，{total_points} 点", "ok")
 
-    # 模型常驻显存，不卸载（避免下次推理重新加载 3-5s）
+    # 推理完成，卸载模型释放显存
+    if model_state["model"] is not None:
+        del model_state["model"]
+        model_state["model"] = None
+        torch.cuda.empty_cache()
+        write_log("模型已卸载，显存已释放", "info")
 
     # 更新 latest 软链接，始终指向最新 batch
     latest_link = DATA_DIR / "latest"
@@ -967,11 +968,15 @@ async def force_stop(batch_id: str):
     
     if model_state["model"]:
         model_state["model"].clean_kv_cache()
-    
+        # 卸载模型释放显存
+        del model_state["model"]
+        model_state["model"] = None
+        torch.cuda.empty_cache()
+
     batch_dir = DATA_DIR / batch_id
     if batch_dir.exists():
         shutil.rmtree(batch_dir)
-    
+
     write_log(f"强制停止完成: {batch_id}, 所有数据已清空", "info")
     
     return {"success": True, "batch_id": batch_id, "message": "所有处理已终止，数据已清空"}

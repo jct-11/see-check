@@ -279,8 +279,9 @@ function startContinuousCapture() {
 
   // 首次采集时，初始化批次号和进度条
   if (spatialFrameCounter === 0 && collectedFrames.length === 0) {
-    // 生成新的批次号
-    currentBatchId = generateBatchId();
+    if (!currentBatchId) {
+      currentBatchId = generateBatchId();
+    }
     isInitialBatch = true;
     addLog('采集开始, ' + spatialCaptureTargetFrames + ' 帧, 批次 ' + currentBatchId, 'info');
     showCaptureProgress();
@@ -2969,79 +2970,123 @@ async function captureCurrentFrameData() {
  * 开始空间记忆采集
  * 读取UI输入参数，启动API采集
  */
-function startSpatialCapture() {
+async function startSpatialCapture() {
   console.log('[Spatial UI] startSpatialCapture 被调用');
-  if (typeof SpatialApi !== 'undefined') {
-    // 读取采集参数
-    var fpsInput = document.getElementById('captureFpsInput');
-    var frameCountInput = document.getElementById('captureFrameCountInput');
-    var maxImagesInput = document.getElementById('maxImagesInput');
-    if (fpsInput && fpsInput.value) {
-      spatialCaptureFps = parseInt(fpsInput.value) || 5;
-    }
-    if (frameCountInput && frameCountInput.value) {
-      spatialCaptureTargetFrames = parseInt(frameCountInput.value) || 300;
-    }
-    if (maxImagesInput && maxImagesInput.value) {
-      spatialMaxImages = parseInt(maxImagesInput.value);
-      spatialCaptureTargetFrames = spatialMaxImages;
-      spatialKeyframeInterval = 1;  // Always 1 — every frame is a keyframe
-    } else {
-      spatialMaxImages = null;
-      spatialKeyframeInterval = 1;
-    }
-
-    SpatialApi.setCapturing(true);
-    SpatialApi.reset();
-    SpatialApi.getState().isCapturing = true;
-
-    // Reset auto-replace state machine
-    streamingComplete = false;
-    semanticReady = false;
-    autoReplaced = false;
-    memoryActive = false;
-
-    // Dispose old semantic point cloud if re-capturing
-    console.log('[DEBUG-clean] startSpatialCapture: scene children before:', memoryScene.children.length);
-    if (memoryPointCloud) {
-      memoryScene.remove(memoryPointCloud);
-      disposeObject(memoryPointCloud);
-      memoryPointCloud = null;
-    }
-    memoryLabelSprites.forEach(s => memoryScene.remove(s));
-    memoryLabelSprites = [];
-    memoryRingSprites.forEach(s => memoryScene.remove(s));
-    memoryRingSprites = [];
-    _updateDistanceLines();
-    // Clear selection state
-    for (const [idx, entry] of selectedObjects) {
-      if (entry.labelSprite) { memoryScene.remove(entry.labelSprite); disposeObject(entry.labelSprite); }
-      _restoreObjectColors(idx);
-    }
-    selectedObjects.clear();
-    console.log('[DEBUG-clean] startSpatialCapture: scene children after:', memoryScene.children.length);
-    memoryObjIdx = null;
-    memoryOriginalColors = null;
-    memorySceneLoaded = false;
-    memorySceneGraph = null;
-
-    if (SpatialApi.startContinuousCapture) {
-      SpatialApi.startContinuousCapture();
-    }
-
-    const startBtn = document.getElementById('spatialStartCaptureBtn');
-    const stopBtn = document.getElementById('spatialStopCaptureBtn');
-    if (startBtn) startBtn.disabled = true;
-    if (stopBtn) stopBtn.disabled = false;
-
-    updateStepStatus('stepCapture', 'active');
-    updateStepStatus('stepProcessing', 'pending');
-    updateStepStatus('step3D', 'pending');
-
-    addLog(`采集已启动 (${spatialCaptureFps} FPS, ${spatialCaptureTargetFrames} 帧)`, 'ok');
-  } else {
+  if (typeof SpatialApi === 'undefined') {
     addLog('SpatialApi 模块未加载，无法采集', 'err');
+    return;
   }
+
+  // 读取采集参数
+  var fpsInput = document.getElementById('captureFpsInput');
+  var frameCountInput = document.getElementById('captureFrameCountInput');
+  var maxImagesInput = document.getElementById('maxImagesInput');
+  if (fpsInput && fpsInput.value) {
+    spatialCaptureFps = parseInt(fpsInput.value) || 5;
+  }
+  if (frameCountInput && frameCountInput.value) {
+    spatialCaptureTargetFrames = parseInt(frameCountInput.value) || 300;
+  }
+  if (maxImagesInput && maxImagesInput.value) {
+    spatialMaxImages = parseInt(maxImagesInput.value);
+    spatialCaptureTargetFrames = spatialMaxImages;
+    spatialKeyframeInterval = 1;
+  } else {
+    spatialMaxImages = null;
+    spatialKeyframeInterval = 1;
+  }
+
+  SpatialApi.setCapturing(true);
+  SpatialApi.reset();
+  SpatialApi.getState().isCapturing = true;
+
+  // Reset auto-replace state machine
+  streamingComplete = false;
+  semanticReady = false;
+  autoReplaced = false;
+  memoryActive = false;
+
+  // Dispose old semantic point cloud if re-capturing
+  console.log('[DEBUG-clean] startSpatialCapture: scene children before:', memoryScene.children.length);
+  if (memoryPointCloud) {
+    memoryScene.remove(memoryPointCloud);
+    disposeObject(memoryPointCloud);
+    memoryPointCloud = null;
+  }
+  memoryLabelSprites.forEach(s => memoryScene.remove(s));
+  memoryLabelSprites = [];
+  memoryRingSprites.forEach(s => memoryScene.remove(s));
+  memoryRingSprites = [];
+  _updateDistanceLines();
+  for (const [idx, entry] of selectedObjects) {
+    if (entry.labelSprite) { memoryScene.remove(entry.labelSprite); disposeObject(entry.labelSprite); }
+    _restoreObjectColors(idx);
+  }
+  selectedObjects.clear();
+  console.log('[DEBUG-clean] startSpatialCapture: scene children after:', memoryScene.children.length);
+  memoryObjIdx = null;
+  memoryOriginalColors = null;
+  memorySceneLoaded = false;
+  memorySceneGraph = null;
+
+  // 生成批次号，先加载模型
+  currentBatchId = generateBatchId();
+  const startBtn = document.getElementById('spatialStartCaptureBtn');
+  const stopBtn = document.getElementById('spatialStopCaptureBtn');
+  if (startBtn) {
+    startBtn.disabled = true;
+    startBtn.textContent = '模型加载中...';
+  }
+
+  addLog('正在加载模型...', 'info');
+  try {
+    const response = await fetch(`${BATCH_SERVER_URL}/batch/${currentBatchId}/start_inference`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batch_id: currentBatchId, keyframe_interval: spatialKeyframeInterval, max_images: spatialMaxImages })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(errorText || 'HTTP ' + response.status);
+    }
+
+    const result = await response.json();
+    if (!result.success) {
+      throw new Error(result.error || 'unknown error');
+    }
+
+    addLog('模型加载完成', 'ok');
+  } catch (err) {
+    addLog('模型加载失败: ' + err.message, 'err');
+    if (startBtn) {
+      startBtn.disabled = false;
+      startBtn.textContent = '开始采集';
+    }
+    return;
+  }
+
+  isInferenceStarted = true;
+  isBatchProcessing = true;
+
+  // 启动点云逐帧拉取
+  if (typeof SpatialVisualizer !== 'undefined' && SpatialVisualizer.startFrameByFrameFetch) {
+    SpatialVisualizer.startFrameByFrameFetch(currentBatchId, null);
+  }
+
+  // 模型就绪，开始采帧
+  if (SpatialApi.startContinuousCapture) {
+    SpatialApi.startContinuousCapture();
+  }
+
+  if (startBtn) startBtn.textContent = '采集中';
+  if (stopBtn) stopBtn.disabled = false;
+
+  updateStepStatus('stepCapture', 'active');
+  updateStepStatus('stepProcessing', 'pending');
+  updateStepStatus('step3D', 'pending');
+
+  addLog(`采集已启动 (${spatialCaptureFps} FPS, ${spatialCaptureTargetFrames} 帧)`, 'ok');
 }
 
 /**
@@ -3056,7 +3101,7 @@ async function stopSpatialCapture() {
 
     const startBtn = document.getElementById('spatialStartCaptureBtn');
     const stopBtn = document.getElementById('spatialStopCaptureBtn');
-    if (startBtn) startBtn.disabled = false;
+    if (startBtn) { startBtn.disabled = false; startBtn.textContent = '开始采集'; }
     if (stopBtn) stopBtn.disabled = true;
 
     updateStepStatus('stepCapture', 'pending');
@@ -3179,7 +3224,7 @@ async function forceStopProcessing() {
   
   const startBtn = document.getElementById('spatialStartCaptureBtn');
   const stopBtn = document.getElementById('spatialStopCaptureBtn');
-  if (startBtn) startBtn.disabled = false;
+  if (startBtn) { startBtn.disabled = false; startBtn.textContent = '开始采集'; }
   if (stopBtn) stopBtn.disabled = true;
   
   updateStepStatus('stepCapture', 'pending');
