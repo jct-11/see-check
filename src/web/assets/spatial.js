@@ -2590,12 +2590,22 @@ function startStreamingFetchLoop() {
           _lastLogCount = 0;
         }
         if (logs.length > _lastLogCount) {
-          logs.slice(_lastLogCount).forEach(function(l) { addLog(l.message, l.type, true); });
+          var newLogs = logs.slice(_lastLogCount);
+          newLogs.forEach(function(l) { addLog(l.message, l.type, true); });
           _lastLogCount = logs.length;
+          // 检测到缓存就绪立即触发拉取，不等 status 轮询
+          for (var i = 0; i < newLogs.length; i++) {
+            if (newLogs[i].message.indexOf('[TS] 缓存就绪') !== -1) {
+              if (isFetchingFrames && _concurrentFetches < MAX_CONCURRENT) {
+                scheduleNextFetch(0);
+              }
+              break;
+            }
+          }
         }
       }
     } catch (e) { /* ignore */ }
-    if (isFetchingFrames) setTimeout(pollLogs, 1000);
+    if (isFetchingFrames) setTimeout(pollLogs, 500);
   };
   setTimeout(pollLogs, 500);
 }

@@ -914,13 +914,7 @@ async def finish_inference(batch_id: str):
     
     write_log(f"推理完成，共 {total_processed} 帧，{total_points} 点", "ok")
 
-    # 释放模型显存给 dgsg 建图管线使用
-    if model_state["model"] is not None:
-        write_log("释放 lingbot-map 模型显存...", "info")
-        del model_state["model"]
-        model_state["model"] = None
-        torch.cuda.empty_cache()
-        write_log(f"模型已卸载，可用显存: {torch.cuda.mem_get_info()[0] / 1e9:.1f} GB", "ok")
+    # 模型常驻显存，不卸载（避免下次推理重新加载 3-5s）
 
     # 更新 latest 软链接，始终指向最新 batch
     latest_link = DATA_DIR / "latest"
