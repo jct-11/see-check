@@ -580,6 +580,7 @@ function resetSpatialState() {
   }
   camerasData = [];
   currentFetchFrame = 0;
+  _nextRenderFrame = -1;
   isFetchingFrames = false;
   totalFramesAvailable = 0;
 }
@@ -809,6 +810,7 @@ const FOLLOW_RATE = 10; // higher = more responsive (1/s)
 let fetchBatchId = null;
 let isFetchingFrames = false;
 let currentFetchFrame = 0;
+  _nextRenderFrame = -1;
 let totalFramesAvailable = 0;
 let framePointClouds = [];       // raw per-frame data before filtering
 
@@ -2195,6 +2197,7 @@ async function startFrameByFrameFetch(batchId, totalFrames) {
   trajectoryDirty = true;
   totalFramesAvailable = totalFrames;
   currentFetchFrame = 0;
+  _nextRenderFrame = -1;
   isFetchingFrames = true;
   fetchBatchId = batchId;
   camerasData = [];
@@ -2230,10 +2233,14 @@ function loadPLY(url) {
 }
 
 let fetchNextFrameCallCount = 0;
-let fetchNextFrameActive = false;
 let fetchNextFramePending = 0;  // count of pending setTimeout callbacks
 let prefetchNext = null;  // { frameIndex, pointCloudResponse, cameraResponse }
 let prefetchQueue = [];   // 并发预取队列
+var _concurrentFetches = 0;
+var MAX_CONCURRENT = 4;
+var _statusCheckLock = false;
+var _nextRenderFrame = -1;  // next frame to render in order (set on first claimed frame)
+
 function scheduleNextFetch(delay) {
   fetchNextFramePending++;
   setTimeout(function() {
@@ -2242,16 +2249,26 @@ function scheduleNextFetch(delay) {
   }, delay);
 }
 
+function _tryRenderNext() {
+  // 按帧号顺序渲染，已就绪的连续帧一口气渲完
+  while (_nextRenderFrame >= 0 && framePointClouds[_nextRenderFrame]) {
+    var fr = _nextRenderFrame;
+    addFramePointCloudToScene(fr);
+    framePointClouds[fr] = null; // free raw data after accumulation
+    _nextRenderFrame++;
+  }
+}
+
 async function fetchNextFrame() {
   fetchNextFrameCallCount++;
-  const fetchCallId = fetchNextFrameCallCount;
-  if (fetchNextFrameActive) {
-    console.warn('[拉取] 重叠调用 #' + fetchCallId);
+  var myFrameIdx;
+
+  // 并发数满则退避
+  if (_concurrentFetches >= MAX_CONCURRENT) {
+    scheduleNextFetch(20);
+    return;
   }
-  fetchNextFrameActive = true;
   const tFetch0 = performance.now();
-  
-  try {
 
   if (!isFetchingFrames) {
     isFetchingFrames = false;
@@ -2279,6 +2296,9 @@ async function fetchNextFrame() {
   let currentProcessedFrames = 0;
 
   if (!totalFramesAvailable) {
+  // 只允许一个实例查状态，其余排队等结果
+  while (_statusCheckLock) { await new Promise(function(r) { setTimeout(r, 20); }); }
+  _statusCheckLock = true;
   try {
     const statusResponse = await fetch(`${BATCH_SERVER_URL}/batch/${fetchBatchId}/status`);
     if (statusResponse.ok) {
@@ -2301,6 +2321,7 @@ async function fetchNextFrame() {
   } catch (err) {
     console.warn('检查状态失败:', err.message);
   }
+  _statusCheckLock = false;
   }
   
   if (!hasNewFrame && !totalFramesAvailable) {
@@ -2317,20 +2338,30 @@ async function fetchNextFrame() {
     
     console.log('[fetch] 等待新帧... processed=' + currentProcessedFrames + ', current=' + currentFetchFrame);
     if (isFetchingFrames) {
-      scheduleNextFetch(500);
+      scheduleNextFetch(200);
     }
     return;
   }
   
+  // 原子认领帧号
+  if (_concurrentFetches >= MAX_CONCURRENT) {
+    scheduleNextFetch(20);
+    return;
+  }
+  myFrameIdx = currentFetchFrame;
+  currentFetchFrame++;
+  if (_nextRenderFrame < 0) _nextRenderFrame = myFrameIdx;
+  _concurrentFetches++;
+
   // ✅ 流式模式：有新帧或批量模式：继续拉取当前帧
   try {
     const tNet0 = performance.now();
-    addLog('[TS] 拉取 #' + currentFetchFrame + ' ' + new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 }), 'info');
+    addLog('[TS] 拉取 #' + myFrameIdx + ' ' + new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 }), 'info');
     let pointCloudResponse, cameraResponse;
     // 先从预取队列取，再从单个预取取，最后才实时 fetch
     var queued = null;
     for (var qi = 0; qi < prefetchQueue.length; qi++) {
-      if (prefetchQueue[qi] && prefetchQueue[qi].frameIndex === currentFetchFrame) {
+      if (prefetchQueue[qi] && prefetchQueue[qi].frameIndex === myFrameIdx) {
         queued = prefetchQueue[qi];
         prefetchQueue.splice(qi, 1);
         break;
@@ -2347,7 +2378,7 @@ async function fetchNextFrame() {
         cameraResult = queued._camResult;
       }
     }
-    if (!buf && prefetchNext && prefetchNext.frameIndex === currentFetchFrame && prefetchNext.pointCloudResponse) {
+    if (!buf && prefetchNext && prefetchNext.frameIndex === myFrameIdx && prefetchNext.pointCloudResponse) {
       pointCloudResponse = prefetchNext.pointCloudResponse;
       cameraResponse = prefetchNext.cameraResponse;
       prefetchNext = null;
@@ -2355,8 +2386,8 @@ async function fetchNextFrame() {
     if (!buf) {
       prefetchNext = null;
       [pointCloudResponse, cameraResponse] = await Promise.all([
-        fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + currentFetchFrame + '/point_cloud'),
-        fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + currentFetchFrame + '/camera')
+        fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + myFrameIdx + '/point_cloud'),
+        fetch(BATCH_SERVER_URL + '/batch/' + fetchBatchId + '/frame/' + myFrameIdx + '/camera')
       ]);
     }
     const tNet1 = performance.now();
@@ -2364,14 +2395,14 @@ async function fetchNextFrame() {
     // 验证响应
     if (!buf && (!pointCloudResponse || !pointCloudResponse.ok)) {
       if (pointCloudResponse && pointCloudResponse.status === 404) {
-        console.log('[拉取] #' + currentFetchFrame + ' 404 跳过');
-        currentFetchFrame++;
-        if (isFetchingFrames) scheduleNextFetch(100);
+        console.log('[拉取] #' + myFrameIdx + ' 404 跳过');
+        _concurrentFetches--;
+        if (isFetchingFrames) scheduleNextFetch(0);
         return;
       }
-      addLog('帧 ' + currentFetchFrame + ' 请求失败: ' + (pointCloudResponse ? pointCloudResponse.status : '?'), 'err');
-      currentFetchFrame++;
-      if (isFetchingFrames) scheduleNextFetch(100);
+      addLog('帧 ' + myFrameIdx + ' 请求失败: ' + (pointCloudResponse ? pointCloudResponse.status : '?'), 'err');
+      _concurrentFetches--;
+      if (isFetchingFrames) scheduleNextFetch(0);
       return;
     }
 
@@ -2397,7 +2428,7 @@ async function fetchNextFrame() {
     var tBody1 = performance.now();
 
     if (cameraResult && cameraResult.success && cameraResult.camera) {
-      camerasData[currentFetchFrame] = cameraResult.camera;
+      camerasData[myFrameIdx] = cameraResult.camera;
       trajectoryDirty = true;
     }
     const n = new DataView(buf).getUint32(0, true);
@@ -2412,44 +2443,42 @@ async function fetchNextFrame() {
     const flatConfsArr = new Float32Array(buf, 4 + n * 24, n);
 
 
-    framePointClouds[currentFetchFrame] = {
+    framePointClouds[myFrameIdx] = {
       positions: flatPositions,
       colors: flatColorsArr,
       confs: flatConfsArr
     };
 
     const tGeom0 = performance.now();
-    addFramePointCloudToScene(currentFetchFrame);
+    // 按帧号顺序渲染，防止乱序
+    _tryRenderNext();
     const tGeom1 = performance.now();
-    framePointClouds[currentFetchFrame] = null; // free raw data after accumulation
     if (typeof performance.memory !== "undefined") {
       console.log('[内存] JS堆 ' + (performance.memory.usedJSHeapSize / 1048576).toFixed(1) + '/' + (performance.memory.totalJSHeapSize / 1048576).toFixed(1) + ' MB');
     }
 
-    if (currentFetchFrame % 3 === 0) {
+    if (myFrameIdx % 3 === 0) {
       try {
         updateTrajectoryAndFrustums();
       } catch (e) {
-        console.warn('Camera frustum update failed for frame ' + currentFetchFrame + ': ' + e.message);
+        console.warn('Camera frustum update failed for frame ' + myFrameIdx + ': ' + e.message);
       }
     }
     try {
-      updateCameraFollow(currentFetchFrame);
+      updateCameraFollow(myFrameIdx);
     } catch (e) {
       console.warn('Camera follow update failed:', e.message);
     }
 
     var delay = inferenceTime ? (Date.now() - inferenceTime * 1000).toFixed(0) : '?';
-    addLog(`渲染 #${currentFetchFrame}  ${numVertices.toLocaleString()} 点  +${delay}ms`, 'ok');
-
-    currentFetchFrame++;
+    addLog(`渲染 #${myFrameIdx}  ${numVertices.toLocaleString()} 点  +${delay}ms`, 'ok');
 
     const tFetch1 = performance.now();
     var netMs = (tNet1 - tNet0).toFixed(0);
     var bodyMs = (tBody1 - tBody0).toFixed(0);
     var geomMs = (tGeom1 - tGeom0).toFixed(0);
     var otherMs = (tFetch1 - tGeom1).toFixed(0);
-    console.log('[拉取] #' + (currentFetchFrame - 1) + ' 完成 ' + (tFetch1 - tFetch0).toFixed(0) + 'ms (头' + netMs + ' + 体' + bodyMs + ' + 几何' + geomMs + ' + 其它' + otherMs + 'ms)');
+    console.log('[拉取] #' + myFrameIdx + ' 完成 ' + (tFetch1 - tFetch0).toFixed(0) + 'ms (头' + netMs + ' + 体' + bodyMs + ' + 几何' + geomMs + ' + 其它' + otherMs + 'ms)');
 
     // ✅ 流式模式：先检查状态再继续拉取，避免频繁请求
     // 批量模式：并发预取多帧，减少串行等待
@@ -2494,19 +2523,16 @@ async function fetchNextFrame() {
         }
         scheduleNextFetch(0);
       } else {
-        scheduleNextFetch(100);
+        scheduleNextFetch(0);
       }
     }
   } catch (err) {
-    addLog('帧 ' + currentFetchFrame + ' 加载失败: ' + err.message, 'err');
-    currentFetchFrame++;
+    addLog('帧 ' + myFrameIdx + ' 加载失败: ' + err.message, 'err');
     if (isFetchingFrames) {
-      scheduleNextFetch(100);
+      scheduleNextFetch(0);
     }
   }
-  } finally {
-    fetchNextFrameActive = false;
-  }
+  _concurrentFetches--;
 }
 
 /**
@@ -2559,6 +2585,10 @@ function startStreamingFetchLoop() {
       if (resp.ok) {
         const data = await resp.json();
         const logs = data.logs || [];
+        // 后端日志超过 1000 条会截断到 500，这时 _lastLogCount 失步，重置
+        if (logs.length < _lastLogCount) {
+          _lastLogCount = 0;
+        }
         if (logs.length > _lastLogCount) {
           logs.slice(_lastLogCount).forEach(function(l) { addLog(l.message, l.type, true); });
           _lastLogCount = logs.length;
@@ -3063,6 +3093,7 @@ async function forceStopProcessing() {
   
   totalFramesAvailable = 0;
   currentFetchFrame = 0;
+  _nextRenderFrame = -1;
   fetchBatchId = null;
   spatialFrameCounter = 0;
   totalFramesCollected = 0;
